@@ -40,23 +40,6 @@ export function normalizeMapping(raw: unknown, trackId: string): TrackMapping | 
     const audioUrl = sanitizeText(data.audioUrl, 2000)
     if (!isStableHttpsUrl(audioUrl)) return null
     const artists = normalizeArtistList(data.artists)
-    const history = Array.isArray(data.history)
-        ? data.history
-              .slice(-10)
-              .map(item => {
-                  if (!item || typeof item !== 'object') return null
-                  const entry = item as Record<string, unknown>
-                  const url = sanitizeText(entry.audioUrl, 2000)
-                  if (!isStableHttpsUrl(url)) return null
-                  return {
-                      audioUrl: url,
-                      assetName: sanitizeText(entry.assetName, 300),
-                      source: normalizeSource(entry.source),
-                      replacedAt: sanitizeText(entry.replacedAt, 40),
-                  }
-              })
-              .filter((item): item is NonNullable<typeof item> => Boolean(item))
-        : undefined
     return {
         trackId: id,
         title: sanitizeText(data.title, 400) || `Трек ${id}`,
@@ -69,7 +52,6 @@ export function normalizeMapping(raw: unknown, trackId: string): TrackMapping | 
         source: normalizeSource(data.source),
         addedAt: sanitizeText(data.addedAt, 40) || new Date(0).toISOString(),
         updatedAt: sanitizeText(data.updatedAt, 40) || new Date(0).toISOString(),
-        ...(history?.length ? { history } : {}),
     }
 }
 

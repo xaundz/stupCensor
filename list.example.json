@@ -11,8 +11,8 @@
       ],
       "durationMs": 245000,
       "enabled": true,
-      "audioUrl": "https://github.com/OWNER/REPO/releases/download/library/12345678-example.m4a",
-      "assetName": "12345678-example.m4a",
+      "audioUrl": "https://github.com/OWNER/REPO/releases/download/library/12345678.m4a",
+      "assetName": "12345678.m4a",
       "releaseTag": "library",
       "source": {
         "provider": "manual",

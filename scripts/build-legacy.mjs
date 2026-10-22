@@ -21,7 +21,7 @@ const metadata = {
     id: 'stupid-censor',
     name: 'stupidCensor',
     description: 'Облачная библиотека замен для заблюренных треков Яндекс Музыки.',
-    version: '1.1.0',
+    version: '1.1.1',
     author: 'xaunds',
     type: 'script',
     image: 'Assets/logo.png',

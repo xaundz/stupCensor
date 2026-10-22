@@ -49,12 +49,6 @@ export type TrackMapping = {
     source: SourceInfo
     addedAt: string
     updatedAt: string
-    history?: Array<{
-        audioUrl: string
-        assetName: string
-        source?: SourceInfo
-        replacedAt: string
-    }>
 }
 
 export type LibraryIndex = {

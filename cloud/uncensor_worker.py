@@ -36,6 +36,7 @@ except ImportError:  # pragma: no cover - reported with a readable message at ru
 LOG = logging.getLogger("uncensor-cloud")
 
 LIBRARY_TAG = "library"
+PREVIEWS_TAG = "previews"
 INDEX_FILE = "list.json"
 JOBS_DIR = "jobs"
 AUDIO_LIMIT_BYTES = 300 * 1024 * 1024
@@ -555,6 +556,44 @@ class GitHubAPI:
                 return asset
         return None
 
+    def delete_asset(self, asset: dict[str, Any]) -> None:
+        asset_id = int(asset.get("id") or 0)
+        if not asset_id:
+            raise WorkerError("github_asset", "У release asset нет id.")
+        response = self.session.delete(self._url(f"/releases/assets/{asset_id}"), timeout=30)
+        if not response.ok and response.status_code != 404:
+            raise self._error(response, f"Не удалось удалить asset {asset.get('name') or asset_id}")
+
+    def delete_track_assets(self, release: dict[str, Any], track_id: str, keep_name: str = "") -> int:
+        release_id = int(release.get("id") or 0)
+        if not release_id:
+            raise WorkerError("github_release", "У релиза нет id.")
+        pattern = re.compile(rf"^{re.escape(track_id)}(?:-|\.|$)")
+        removed = 0
+        for asset in self.list_assets(release_id):
+            name = str(asset.get("name") or "")
+            if name == keep_name or not pattern.match(name):
+                continue
+            self.delete_asset(asset)
+            removed += 1
+        return removed
+
+    def cleanup_legacy_previews(self) -> None:
+        release = self.get_release(PREVIEWS_TAG)
+        if not release:
+            return
+        release_id = int(release.get("id") or 0)
+        if not release_id:
+            return
+        for asset in self.list_assets(release_id):
+            self.delete_asset(asset)
+        response = self.session.delete(self._url(f"/releases/{release_id}"), timeout=30)
+        if not response.ok and response.status_code != 404:
+            raise self._error(response, "Не удалось удалить старый релиз previews")
+        response = self.session.delete(self._url(f"/git/refs/tags/{quote(PREVIEWS_TAG)}"), timeout=30)
+        if not response.ok and response.status_code not in (404, 422):
+            raise self._error(response, "Не удалось удалить тег previews")
+
     def upload_asset(self, release: dict[str, Any], name: str, path: Path, content_type: str = "audio/mp4") -> dict[str, Any]:
         release_id = int(release.get("id") or 0)
         if not release_id:
@@ -926,21 +965,6 @@ def build_mapping(
     }
     if existing and isinstance(existing, dict):
         mapping["addedAt"] = str(existing.get("addedAt") or now)
-        history = existing.get("history")
-        history_items = history if isinstance(history, list) else []
-        old_url = existing.get("audioUrl")
-        if old_url and old_url != audio_url:
-            history_items = [
-                {
-                    "audioUrl": old_url,
-                    "assetName": str(existing.get("assetName") or ""),
-                    "source": existing.get("source") if isinstance(existing.get("source"), dict) else {},
-                    "replacedAt": now,
-                },
-                *history_items,
-            ][:20]
-        if history_items:
-            mapping["history"] = history_items[:20]
         mapping["enabled"] = True
     return mapping
 
@@ -985,7 +1009,7 @@ def handle_confirm(github: GitHubAPI, job: JobStatus) -> None:
             )
         library = github.ensure_release(LIBRARY_TAG, "Uncensor Cloud — library")
         track_id = job.track_id
-        final_name = f"{track_id}-{candidate_id_value}.m4a"
+        final_name = f"{track_id}.m4a"
         final_asset = github.upload_asset(library, final_name, output_path, "audio/mp4")
         audio_url = str(final_asset.get("browser_download_url") or "")
         if not audio_url.startswith("https://"):
@@ -1025,6 +1049,7 @@ def handle_confirm(github: GitHubAPI, job: JobStatus) -> None:
             return True
 
         github.update_index(mutate)
+        github.delete_track_assets(library, track_id, keep_name=final_name)
         job.write(
             "published",
             published={"audioUrl": audio_url, "assetName": final_name},
@@ -1045,8 +1070,7 @@ def handle_manual(github: GitHubAPI, job: JobStatus) -> None:
         download_public_file(source_url, download_path)
         duration = transcode_to_m4a(download_path, output_path)
         library = github.ensure_release(LIBRARY_TAG, "Uncensor Cloud — library")
-        source_hash = hashlib.sha256(source_url.encode("utf-8")).hexdigest()[:10]
-        final_name = f"{job.track_id}-manual-{source_hash}.m4a"
+        final_name = f"{job.track_id}.m4a"
         asset = github.upload_asset(library, final_name, output_path, "audio/mp4")
         audio_url = str(asset.get("browser_download_url") or "")
         if not audio_url.startswith("https://"):
@@ -1082,6 +1106,7 @@ def handle_manual(github: GitHubAPI, job: JobStatus) -> None:
             return True
 
         github.update_index(mutate)
+        github.delete_track_assets(library, job.track_id, keep_name=final_name)
         job.write("published", published={"audioUrl": audio_url, "assetName": final_name})
     finally:
         shutil.rmtree(work_root, ignore_errors=True)
@@ -1116,7 +1141,10 @@ def handle_remove(github: GitHubAPI, job: JobStatus) -> None:
         return True
 
     github.update_index(mutate)
-    job.write("removed", note="Аудиофайл в Releases не удаляется.")
+    library = github.get_release(LIBRARY_TAG)
+    if library:
+        github.delete_track_assets(library, job.track_id)
+    job.write("removed", note="Аудиофайлы трека удалены из Releases.")
 
 
 def validate_inputs(action: str, job_id: str, track_id: str) -> None:
@@ -1143,6 +1171,10 @@ def main() -> int:
         github = GitHubAPI(token, repo, branch)
         job = JobStatus(github, action, job_id, repo, branch)
         job.write("running")
+        try:
+            github.cleanup_legacy_previews()
+        except Exception as cleanup_error:  # pragma: no cover - cleanup must not block the job
+            LOG.warning("Legacy previews cleanup failed: %s", cleanup_error)
         if action == "search":
             handle_search(github, job)
         elif action == "confirm":

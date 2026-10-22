@@ -111,14 +111,14 @@ class MappingTests(unittest.TestCase):
         self.assertTrue(mapping["enabled"])
         self.assertNotIn("history", mapping)
 
-    def test_replacement_preserves_added_at_and_history(self):
+    def test_replacement_preserves_added_at_without_history(self):
         existing = {
             "addedAt": "2024-01-01T00:00:00Z",
             "enabled": False,
             "audioUrl": "https://github.com/a/b/releases/download/library/old.m4a",
             "assetName": "old.m4a",
             "source": {"provider": "manual"},
-            "history": [{"audioUrl": "https://example.com/older.m4a", "assetName": "older.m4a", "replacedAt": "2023" }],
+            "history": [{"audioUrl": "https://example.com/older.m4a", "assetName": "older.m4a", "replacedAt": "2023"}],
         }
         mapping = worker.build_mapping(
             "123",
@@ -132,14 +132,75 @@ class MappingTests(unittest.TestCase):
         )
         self.assertEqual(mapping["addedAt"], "2024-01-01T00:00:00Z")
         self.assertTrue(mapping["enabled"])
-        self.assertEqual(mapping["history"][0]["audioUrl"], existing["audioUrl"])
-        self.assertEqual(mapping["history"][1]["audioUrl"], "https://example.com/older.m4a")
-
-    def test_same_url_does_not_duplicate_history(self):
-        url = "https://github.com/a/b/releases/download/library/same.m4a"
-        existing = {"audioUrl": url, "assetName": "same.m4a", "addedAt": "2024-01-01T00:00:00Z"}
-        mapping = worker.build_mapping("123", "T", "A", 1000, url, "same.m4a", {}, existing)
         self.assertNotIn("history", mapping)
+
+    def test_track_asset_cleanup_keeps_only_current_file(self):
+        class Response:
+            status_code = 200
+            ok = True
+
+            def json(self):
+                return []
+
+        class Session:
+            def __init__(self):
+                self.deleted = []
+
+            def get(self, url, **kwargs):
+                Response.json = lambda *args: [
+                    {"id": 1, "name": "123-old.m4a"},
+                    {"id": 2, "name": "123.m4a"},
+                    {"id": 3, "name": "1234-old.m4a"},
+                    {"id": 4, "name": "other.m4a"},
+                ]
+                return Response()
+
+            def delete(self, url, **kwargs):
+                self.deleted.append(url)
+                return Response()
+
+        github = object.__new__(worker.GitHubAPI)
+        github.repo = "owner/repo"
+        github.api_url = "https://api.github.com"
+        github.session = Session()
+        removed = github.delete_track_assets({"id": 7}, "123", keep_name="123.m4a")
+        self.assertEqual(removed, 1)
+        self.assertEqual(len(github.session.deleted), 1)
+        self.assertTrue(github.session.deleted[0].endswith("/releases/assets/1"))
+
+    def test_legacy_previews_release_is_removed(self):
+        class Response:
+            status_code = 200
+            ok = True
+
+            def __init__(self, payload=None):
+                self.payload = payload
+
+            def json(self):
+                return self.payload if self.payload is not None else []
+
+        class Session:
+            def __init__(self):
+                self.deleted = []
+
+            def get(self, url, **kwargs):
+                if url.endswith("/releases/tags/previews"):
+                    return Response({"id": 9})
+                if url.endswith("/releases/9/assets"):
+                    return Response([{"id": 11, "name": "old-a.m4a"}, {"id": 12, "name": "old-b.m4a"}])
+                return Response([])
+
+            def delete(self, url, **kwargs):
+                self.deleted.append(url)
+                return Response()
+
+        github = object.__new__(worker.GitHubAPI)
+        github.repo = "owner/repo"
+        github.api_url = "https://api.github.com"
+        github.session = Session()
+        github.cleanup_legacy_previews()
+        self.assertEqual(len(github.session.deleted), 4)
+        self.assertTrue(github.session.deleted[-1].endswith("/git/refs/tags/previews"))
 
 
 class SearchMetadataTests(unittest.TestCase):
@@ -229,6 +290,10 @@ class ConfirmTests(unittest.TestCase):
                 self.asset_name = name
                 return {"browser_download_url": f"https://github.com/owner/repo/releases/download/library/{name}"}
 
+            def delete_track_assets(self, release, track_id, keep_name=""):
+                self.cleanup = (track_id, keep_name)
+                return 0
+
             def update_index(self, mutator):
                 self.index = {"schema": 1, "tracks": {}}
                 mutator(self.index)
@@ -254,7 +319,8 @@ class ConfirmTests(unittest.TestCase):
             worker.handle_confirm(github, job)
 
         download.assert_called_once()
-        self.assertEqual(github.asset_name, "123456-abc123def4.m4a")
+        self.assertEqual(github.asset_name, "123456.m4a")
+        self.assertEqual(github.cleanup, ("123456", "123456.m4a"))
         self.assertIsNotNone(github.index)
         mapping = github.index["tracks"]["123456"]
         self.assertEqual(mapping["source"]["pageUrl"], "https://www.youtube.com/watch?v=abc123")

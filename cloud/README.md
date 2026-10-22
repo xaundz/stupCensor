@@ -58,8 +58,8 @@ Workflow использует встроенный `GITHUB_TOKEN` с `permission
 1. Читает `jobs/<source_job_id>.json`.
 2. Проверяет, что кандидат относится к тому же треку и ссылка всё ещё публичная.
 3. Скачивает выбранную страницу через yt-dlp и перекодирует в M4A/AAC 160 kbps.
-4. Проверяет длительность и загружает один файл в релиз `library`.
-5. Обновляет `list.json`, сохраняя историю старой замены.
+4. Проверяет длительность и загружает файл `<track_id>.m4a` в релиз `library`.
+5. Обновляет `list.json` и удаляет прежние версии этого трека.
 6. Записывает `jobs/<job_id>.json` со статусом `published`.
 
 ### `manual`
@@ -91,8 +91,8 @@ URL с временными подписями (`X-Amz-Signature`, `token`, `exp
       "artists": ["Исполнитель"],
       "durationMs": 245000,
       "enabled": true,
-      "audioUrl": "https://github.com/OWNER/REPO/releases/download/library/12345678-cand-abc123.m4a",
-      "assetName": "12345678-cand-abc123.m4a",
+      "audioUrl": "https://github.com/OWNER/REPO/releases/download/library/12345678.m4a",
+      "assetName": "12345678.m4a",
       "releaseTag": "library",
       "source": {
         "provider": "youtube",
@@ -111,7 +111,7 @@ URL с временными подписями (`X-Amz-Signature`, `token`, `exp
 }
 ```
 
-`history` хранит до 20 предыдущих ссылок. UI показывает последние 10.
+В `library` остаётся только один файл на трек. Устаревшие preview-файлы и релиз `previews` удаляются автоматически при следующем запуске worker.
 
 ## Требования к токену
 
