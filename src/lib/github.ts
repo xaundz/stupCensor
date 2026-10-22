@@ -143,7 +143,7 @@ export class GitHubClient {
 
     async getWorkflow(): Promise<WorkflowInfo> {
         try {
-            const response = await this.request(`/actions/workflows/${WORKFLOW_FILE}`)
+            const response = await this.request(`/repos/${this.repo}/actions/workflows/${WORKFLOW_FILE}`)
             const data = (await response.json()) as {
                 id?: number
                 name?: string
@@ -249,7 +249,7 @@ export class GitHubClient {
         if (!this.token) {
             throw new GitHubError('Для запуска задания нужен GitHub-токен.', 401, 'token_required')
         }
-        await this.request(`/actions/workflows/${WORKFLOW_FILE}/dispatches`, {
+        await this.request(`/repos/${this.repo}/actions/workflows/${WORKFLOW_FILE}/dispatches`, {
             method: 'POST',
             body: {
                 ref: this.branch,
@@ -275,7 +275,7 @@ export class GitHubClient {
     async getRunForJob(jobId: string): Promise<WorkflowRun | null> {
         try {
             const response = await this.request(
-                `/actions/workflows/${WORKFLOW_FILE}/runs?event=workflow_dispatch&per_page=40${this.branch ? `&branch=${encodeURIComponent(this.branch)}` : ''}`,
+                `/repos/${this.repo}/actions/workflows/${WORKFLOW_FILE}/runs?event=workflow_dispatch&per_page=40${this.branch ? `&branch=${encodeURIComponent(this.branch)}` : ''}`,
                 { timeoutMs: 15000 },
             )
             const data = (await response.json()) as {
