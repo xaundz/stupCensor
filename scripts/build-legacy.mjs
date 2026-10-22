@@ -22,7 +22,7 @@ const metadata = {
     name: 'stupidCensor',
     description: 'Облачная библиотека замен для заблюренных треков Яндекс Музыки.',
     version: '1.1.0',
-    author: 'Кирилл (Xaund)',
+    author: 'xaunds',
     type: 'script',
     image: 'Assets/logo.png',
     banner: 'Assets/banner.png',

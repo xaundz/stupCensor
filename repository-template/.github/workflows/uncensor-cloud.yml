@@ -1,0 +1,105 @@
+name: Uncensor Cloud
+run-name: "Uncensor Cloud ${{ inputs.job_id }}"
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "search | confirm | manual | toggle | remove"
+        required: true
+        type: choice
+        options:
+          - search
+          - confirm
+          - manual
+          - toggle
+          - remove
+      job_id:
+        description: "ID задания, созданный аддоном"
+        required: true
+        type: string
+      track_id:
+        description: "ID трека Яндекс Музыки"
+        required: true
+        type: string
+      artist:
+        description: "Исполнитель (для поиска/публикации)"
+        required: false
+        type: string
+      title:
+        description: "Название трека (для поиска/публикации)"
+        required: false
+        type: string
+      duration:
+        description: "Длительность трека в секундах"
+        required: false
+        type: string
+      source_url:
+        description: "Страница источника или прямая HTTPS-ссылка"
+        required: false
+        type: string
+      source_job_id:
+        description: "ID задания поиска для confirm"
+        required: false
+        type: string
+      candidate_id:
+        description: "ID кандидата для confirm"
+        required: false
+        type: string
+      enabled:
+        description: "true/false для toggle"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: uncensor-cloud-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  process:
+    name: Process uncensor job
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: cloud/requirements.txt
+
+      - name: Ensure ffmpeg
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --disable-pip-version-check -r cloud/requirements.txt
+
+      - name: Run worker
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHONUNBUFFERED: "1"
+          ACTION: ${{ inputs.action }}
+          JOB_ID: ${{ inputs.job_id }}
+          TRACK_ID: ${{ inputs.track_id }}
+          ARTIST: ${{ inputs.artist }}
+          TITLE: ${{ inputs.title }}
+          DURATION: ${{ inputs.duration }}
+          SOURCE_URL: ${{ inputs.source_url }}
+          SOURCE_JOB_ID: ${{ inputs.source_job_id }}
+          CANDIDATE_ID: ${{ inputs.candidate_id }}
+          ENABLED: ${{ inputs.enabled }}
+        run: python cloud/uncensor_worker.py

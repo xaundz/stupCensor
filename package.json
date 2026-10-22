@@ -5,7 +5,7 @@
   "type": "module",
   "packageManager": "yarn@1.22.22",
   "description": "stupidCensor: PulseSync addon for cloud-hosted replacement of censored Yandex Music tracks",
-  "author": "Кирилл (Xaund)",
+  "author": "xaunds",
   "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "dev": "node ./scripts/dev-build.mjs",
