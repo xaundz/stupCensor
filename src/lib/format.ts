@@ -1,4 +1,4 @@
-import type { LibraryIndex, TrackMapping, TrackRef, TrackSearchMeta } from '../types.ts'
+import type { JobRecord, LibraryIndex, TrackMapping, TrackRef, TrackSearchMeta } from '../types.ts'
 
 export function formatDuration(durationMs: number | undefined): string {
     if (!durationMs || !Number.isFinite(durationMs) || durationMs <= 0) return '—'
@@ -136,7 +136,7 @@ export function statusLabel(status: string | undefined): string {
         case 'removed':
             return 'Связь удалена'
         case 'abandoned':
-            return 'Отслеживание остановлено'
+            return 'Отменено'
         default:
             return 'Неизвестно'
     }
@@ -145,6 +145,40 @@ export function statusLabel(status: string | undefined): string {
 export function scorePercent(score: number | undefined): string {
     if (typeof score !== 'number' || !Number.isFinite(score)) return '—'
     return `${Math.round(Math.max(0, Math.min(1, score)) * 100)}%`
+}
+
+const JOB_ETA_SECONDS: Record<JobRecord['action'], number> = {
+    search: 40,
+    confirm: 75,
+    manual: 55,
+    toggle: 6,
+    remove: 6,
+}
+
+export type JobTiming = {
+    elapsedSec: number
+    remainingSec: number
+    progress: number
+    label: string
+}
+
+export function jobTiming(job: JobRecord, now = Date.now()): JobTiming {
+    if (job.status !== 'queued' && job.status !== 'running') {
+        return { elapsedSec: 0, remainingSec: 0, progress: 1, label: '' }
+    }
+    const estimate = Math.max(5, job.etaSeconds || JOB_ETA_SECONDS[job.action] || 30)
+    if (job.status === 'queued' || !job.startedAt) {
+        return { elapsedSec: 0, remainingSec: estimate, progress: 0.04, label: 'ждём runner' }
+    }
+    const started = new Date(job.startedAt).getTime()
+    const elapsedSec = Number.isFinite(started) ? Math.max(0, Math.round((now - started) / 1000)) : 0
+    const remainingSec = Math.max(0, estimate - elapsedSec)
+    const progress = Math.max(0.04, Math.min(0.97, elapsedSec / estimate))
+    let label: string
+    if (elapsedSec > estimate * 1.8) label = 'дольше обычного'
+    else if (remainingSec <= 5) label = 'завершаем…'
+    else label = `осталось ~${remainingSec < 60 ? `${remainingSec} с` : `${Math.ceil(remainingSec / 60)} мин`}`
+    return { elapsedSec, remainingSec, progress, label }
 }
 
 export function normalizeArtistList(value: unknown): string[] {

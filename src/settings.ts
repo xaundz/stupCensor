@@ -14,18 +14,6 @@ export const settings = defineAddonSettings(
             description: 'Регистрирует включённые подмены при запуске и обновлении библиотеки.',
             default: true,
         },
-        pauseOnPreview: {
-            type: SettingType.BOOLEAN,
-            name: 'Пауза Яндекс Музыки при прослушивании',
-            description: 'Останавливает текущее воспроизведение перед запуском предпросмотра кандидата.',
-            default: true,
-        },
-        autoResume: {
-            type: SettingType.BOOLEAN,
-            name: 'Возобновлять музыку после предпросмотра',
-            description: 'Возвращает воспроизведение только если аддон сам поставил его на паузу. По умолчанию выключено.',
-            default: false,
-        },
     },
     { title: 'stupidCensor' },
 )

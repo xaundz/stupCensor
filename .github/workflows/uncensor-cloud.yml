@@ -55,14 +55,14 @@ permissions:
   contents: write
 
 concurrency:
-  group: uncensor-cloud-${{ github.ref }}
-  cancel-in-progress: false
+  group: uncensor-cloud-${{ inputs.job_id }}
+  cancel-in-progress: true
 
 jobs:
   process:
     name: Process uncensor job
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -77,18 +77,22 @@ jobs:
           cache-dependency-path: cloud/requirements.txt
 
       - name: Ensure ffmpeg
+        if: inputs.action == 'confirm' || inputs.action == 'manual'
+        timeout-minutes: 5
         run: |
           if ! command -v ffmpeg >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y ffmpeg
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg
           fi
 
       - name: Install Python dependencies
+        timeout-minutes: 5
         run: |
           python -m pip install --upgrade pip
           python -m pip install --disable-pip-version-check -r cloud/requirements.txt
 
       - name: Run worker
+        timeout-minutes: 24
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PYTHONUNBUFFERED: "1"

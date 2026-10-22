@@ -286,6 +286,7 @@ export class GitHubClient {
                     html_url?: string
                     display_title?: string
                     name?: string
+                    run_started_at?: string | null
                 }>
             }
             const run = (data.workflow_runs ?? []).find(item =>
@@ -298,11 +299,22 @@ export class GitHubClient {
                 conclusion: run.conclusion ?? null,
                 htmlUrl: String(run.html_url || ''),
                 displayTitle: String(run.display_title || ''),
+                startedAt: run.run_started_at ? String(run.run_started_at) : undefined,
             }
         } catch (error) {
             this.api.logger.warn('Не удалось получить статус запуска Actions', error)
             return null
         }
+    }
+
+    async cancelRun(runId: number): Promise<void> {
+        if (!this.token) {
+            throw new GitHubError('Для отмены задания нужен GitHub-токен.', 401, 'token_required')
+        }
+        await this.request(`/repos/${this.repo}/actions/runs/${runId}/cancel`, {
+            method: 'POST',
+            timeoutMs: 20000,
+        })
     }
 
     async getTokenLogin(): Promise<string> {

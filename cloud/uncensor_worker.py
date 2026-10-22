@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Uncensor Cloud GitHub Actions worker.
 
-The worker runs only inside the user's public repository. It searches public
-sources with yt-dlp, publishes previews to the "previews" release, and copies a
-user-selected preview to the "library" release before updating list.json.
+The worker runs only inside the user's public repository. Search reads public
+metadata with yt-dlp without downloading audio. Confirm downloads the selected
+source, publishes one file to the "library" release, and updates list.json.
 """
 
 from __future__ import annotations
@@ -35,16 +35,22 @@ except ImportError:  # pragma: no cover - reported with a readable message at ru
 
 LOG = logging.getLogger("uncensor-cloud")
 
-PREVIEWS_TAG = "previews"
 LIBRARY_TAG = "library"
 INDEX_FILE = "list.json"
 JOBS_DIR = "jobs"
-PREVIEW_LIMIT = 5
 AUDIO_LIMIT_BYTES = 300 * 1024 * 1024
+JOB_ETA_SECONDS = {
+    "search": 40,
+    "confirm": 75,
+    "manual": 55,
+    "toggle": 6,
+    "remove": 6,
+}
 DOWNLOAD_TIMEOUT = (20, 120)
 USER_AGENT = "UncensorCloud/1.0 (+https://github.com/)"
 
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,80}$")
+CANDIDATE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
 TRACK_ID_RE = re.compile(r"^[0-9]{1,24}$")
 
 
@@ -184,14 +190,6 @@ def candidate_warnings(target_title: str, target_artist: str, candidate: dict[st
 def candidate_id(page_url: str) -> str:
     digest = hashlib.sha256(page_url.encode("utf-8")).hexdigest()[:10]
     return f"cand-{digest}"
-
-
-def sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def run_command(command: list[str], timeout: int = 300) -> subprocess.CompletedProcess[str]:
@@ -582,36 +580,6 @@ class GitHubAPI:
             raise WorkerError("github_upload", f"GitHub не вернул ссылку для {name}.")
         return payload
 
-    def download_asset(self, asset: dict[str, Any], destination: Path, max_bytes: int = AUDIO_LIMIT_BYTES) -> None:
-        url = asset.get("url")
-        if not isinstance(url, str) or not url:
-            raise WorkerError("github_asset", "У asset нет API-ссылки.")
-        response = self.session.get(
-            url,
-            headers={"Accept": "application/octet-stream"},
-            stream=True,
-            allow_redirects=True,
-            timeout=DOWNLOAD_TIMEOUT,
-        )
-        if not response.ok:
-            raise self._error(response, "Не удалось скачать asset")
-        total = 0
-        with destination.open("wb") as handle:
-            for chunk in response.iter_content(chunk_size=1024 * 256):
-                if not chunk:
-                    continue
-                total += len(chunk)
-                if total > max_bytes:
-                    handle.close()
-                    destination.unlink(missing_ok=True)
-                    response.close()
-                    raise WorkerError("asset_too_large", "Asset больше допустимого размера.")
-                handle.write(chunk)
-        response.close()
-        if total < 1024:
-            destination.unlink(missing_ok=True)
-            raise WorkerError("asset_empty", "Asset пустой.")
-
 
 class JobStatus:
     def __init__(self, github: GitHubAPI, action: str, job_id: str, repo: str, branch: str):
@@ -624,6 +592,9 @@ class JobStatus:
         self.track_id = clean_text(env("TRACK_ID"), 40)
         self.track_title = clean_text(env("TITLE"), 300)
         self.track_artist = clean_text(env("ARTIST"), 300)
+        self.track_duration_ms = parse_seconds(env("DURATION")) * 1000
+        self.eta_seconds = JOB_ETA_SECONDS.get(action, 30)
+        self.started_at = ""
         self.run_url = self._run_url()
 
     def _run_url(self) -> str:
@@ -632,6 +603,9 @@ class JobStatus:
         return f"{server}/{self.repo}/actions/runs/{run_id}" if run_id else ""
 
     def write(self, status: str, **fields: Any) -> None:
+        now = iso_now()
+        if status == "running" and not self.started_at:
+            self.started_at = now
         payload: dict[str, Any] = {
             "schema": 1,
             "id": self.job_id,
@@ -642,10 +616,14 @@ class JobStatus:
             "trackId": self.track_id,
             "trackTitle": self.track_title,
             "trackArtist": self.track_artist,
+            "trackDurationMs": self.track_duration_ms,
             "createdAt": self.created_at,
-            "updatedAt": iso_now(),
+            "updatedAt": now,
             "expiresAt": iso_after(7),
+            "etaSeconds": self.eta_seconds,
         }
+        if self.started_at:
+            payload["startedAt"] = self.started_at
         if self.run_url:
             payload["runUrl"] = self.run_url
         payload.update(fields)
@@ -784,7 +762,7 @@ def download_and_transcode(page_url: str, work_dir: Path) -> tuple[Path, float, 
     if downloaded is None:
         shutil.rmtree(target_dir, ignore_errors=True)
         raise WorkerError("download_failed", "yt-dlp не создал аудиофайл.")
-    output = target_dir / "preview.m4a"
+    output = target_dir / "source.m4a"
     try:
         duration = transcode_to_m4a(downloaded, output)
     except Exception:
@@ -793,54 +771,42 @@ def download_and_transcode(page_url: str, work_dir: Path) -> tuple[Path, float, 
     return output, duration, info
 
 
-def make_preview_candidate(
-    github: GitHubAPI,
-    previews_release: dict[str, Any],
-    job_id: str,
+def make_candidate(
     raw: dict[str, Any],
     target_title: str,
     target_artist: str,
     target_sec: int,
-    work_dir: Path,
-    page_info: dict[str, Any] | None = None,
+    forced: bool = False,
 ) -> dict[str, Any]:
-    page_url = str(raw.get("pageUrl") or "")
+    page_url = clean_text(raw.get("pageUrl"), 1000)
     validate_public_https(page_url)
-    preview_path, duration, downloaded_info = download_and_transcode(page_url, work_dir)
-    duration_sec = int(round(duration))
-    if not duration_acceptable(target_sec, duration_sec):
-        if not target_sec:
-            raise WorkerError("duration_mismatch", "Длительность записи вне допустимого диапазона.")
-        raise WorkerError(
-            "duration_mismatch",
-            f"Длительность не совпадает: у записи {duration_sec} с, у трека {target_sec} с.",
-        )
-    title = clean_text(raw.get("title") or downloaded_info.get("title"), 300) or "Без названия"
-    uploader = clean_text(raw.get("uploader") or downloaded_info.get("uploader") or downloaded_info.get("channel"), 200)
-    artist = clean_text(raw.get("artist") or downloaded_info.get("artist") or downloaded_info.get("creator"), 200)
-    if page_info:
-        title = clean_text(page_info.get("track") or page_info.get("title") or title, 300)
-        uploader = clean_text(page_info.get("uploader") or page_info.get("channel") or uploader, 200)
-        artist = clean_text(page_info.get("artist") or page_info.get("creator") or artist, 200)
-    score = score_candidate(target_title, target_artist, title, uploader or artist, target_sec, duration_sec)
-    if page_info:
-        score = max(score, 0.8)
-    identifier = candidate_id(page_url)
-    asset_name = f"{job_id}-{identifier}.m4a"
-    digest = sha256_file(preview_path)
-    size = preview_path.stat().st_size
-    asset = github.upload_asset(previews_release, asset_name, preview_path, "audio/mp4")
-    preview_url = str(asset.get("browser_download_url") or "")
-    if not preview_url.startswith("https://"):
-        raise WorkerError("github_upload", "GitHub не вернул публичную ссылку на preview.")
-    warnings = candidate_warnings(target_title, target_artist, {"title": title, "uploader": uploader or artist}, target_sec, duration_sec, score)
-    if page_info:
-        warnings.insert(0, "выбрано вручную по указанной ссылке")
     provider = raw.get("provider")
     if provider not in ("youtube", "soundcloud"):
         provider = "youtube" if "youtu" in page_url else "soundcloud" if "soundcloud" in page_url else "youtube"
+    duration_sec = max(0, int(raw.get("duration") or 0))
+    title = clean_text(raw.get("title"), 300) or "Без названия"
+    uploader = clean_text(raw.get("uploader"), 200)
+    artist = clean_text(raw.get("artist"), 200)
+    score = 1.0 if forced else score_candidate(
+        target_title,
+        target_artist,
+        title,
+        uploader or artist,
+        target_sec,
+        duration_sec,
+    )
+    warnings = candidate_warnings(
+        target_title,
+        target_artist,
+        {"title": title, "uploader": uploader or artist},
+        target_sec,
+        duration_sec,
+        score,
+    )
+    if forced:
+        warnings.insert(0, "выбрано вручную по указанной ссылке")
     return {
-        "id": identifier,
+        "id": candidate_id(page_url),
         "provider": provider,
         "pageUrl": page_url,
         "title": title,
@@ -849,10 +815,6 @@ def make_preview_candidate(
         "durationMs": duration_sec * 1000,
         "score": score,
         "warnings": warnings,
-        "previewUrl": preview_url,
-        "assetName": asset_name,
-        "sizeBytes": size,
-        "sha256": digest,
     }
 
 
@@ -870,24 +832,22 @@ def handle_search(github: GitHubAPI, job: JobStatus) -> None:
     query = f"{target_artist} {target_title}".strip()
     provider_errors: list[str] = []
     raw_candidates: list[dict[str, Any]] = []
-    manual_page: dict[str, Any] | None = None
 
     if source_url:
         try:
             info = extract_single_page(source_url)
-            webpage = str(info.get("webpage_url") or source_url)
             raw_candidates.append(
                 {
-                    "provider": "youtube" if "youtu" in webpage else "soundcloud" if "soundcloud" in webpage else "youtube",
-                    "pageUrl": source_url,
+                    "provider": "youtube" if "youtu" in source_url else "soundcloud" if "soundcloud" in source_url else "youtube",
+                    "pageUrl": str(info.get("webpage_url") or source_url),
                     "title": clean_text(info.get("track") or info.get("title"), 300),
                     "artist": clean_text(info.get("artist") or info.get("creator"), 200),
                     "uploader": clean_text(info.get("uploader") or info.get("channel"), 200),
                     "duration": int(info.get("duration") or 0),
                     "isLive": bool(info.get("is_live")),
+                    "forced": True,
                 }
             )
-            manual_page = info
         except WorkerError as error:
             provider_errors.append(f"указанная ссылка: {error.message}")
 
@@ -898,77 +858,41 @@ def handle_search(github: GitHubAPI, job: JobStatus) -> None:
             provider_errors.append(f"{provider}: {error.message} {error.detail}".strip())
 
     seen_urls: set[str] = set()
-    ranked: list[dict[str, Any]] = []
-    for candidate in raw_candidates:
-        page_url = str(candidate.get("pageUrl") or "")
-        if not page_url or page_url in seen_urls or candidate.get("isLive"):
+    candidates: list[dict[str, Any]] = []
+    for raw in raw_candidates:
+        page_url = str(raw.get("pageUrl") or "")
+        if not page_url or page_url in seen_urls or raw.get("isLive"):
             continue
         seen_urls.add(page_url)
-        duration = int(candidate.get("duration") or 0)
-        if source_url and page_url == source_url:
-            candidate["forced"] = True
-        elif duration and not duration_acceptable(target_sec, duration):
+        duration = int(raw.get("duration") or 0)
+        forced = bool(raw.get("forced"))
+        if not forced and duration and not duration_acceptable(target_sec, duration):
             continue
-        candidate["score"] = 1.0 if candidate.get("forced") else score_candidate(
-            target_title,
-            target_artist,
-            str(candidate.get("title") or ""),
-            str(candidate.get("uploader") or candidate.get("artist") or ""),
-            target_sec,
-            duration,
-        )
-        if not candidate.get("forced") and candidate["score"] < 0.28:
+        try:
+            candidate = make_candidate(raw, target_title, target_artist, target_sec, forced)
+        except WorkerError as error:
+            provider_errors.append(f"{error.code}: {error.message}")
             continue
-        ranked.append(candidate)
+        if not forced and candidate["score"] < 0.28:
+            continue
+        candidates.append(candidate)
 
-    ranked.sort(key=lambda item: (1 if item.get("forced") else 0, float(item.get("score") or 0)), reverse=True)
-    if not ranked:
+    candidates.sort(
+        key=lambda item: (
+            1 if str(item.get("pageUrl")) == source_url else 0,
+            float(item.get("score") or 0),
+            int(item.get("durationMs") or 0),
+        ),
+        reverse=True,
+    )
+    if not candidates:
         raise WorkerError(
             "no_candidates",
             "Подходящие записи не найдены.",
             " ".join(provider_errors)[:3000] or "Поиск не вернул результатов.",
         )
 
-    previews = github.ensure_release(PREVIEWS_TAG, "Uncensor Cloud — previews")
-    work_root = Path(tempfile.mkdtemp(prefix="uncensor-search-"))
-    accepted: list[dict[str, Any]] = []
-    download_errors: list[str] = []
-    try:
-        for index, candidate in enumerate(ranked[:12]):
-            if len(accepted) >= PREVIEW_LIMIT:
-                break
-            page_url = str(candidate.get("pageUrl") or "")
-            try:
-                prepared = make_preview_candidate(
-                    github,
-                    previews,
-                    job.job_id,
-                    candidate,
-                    target_title,
-                    target_artist,
-                    target_sec,
-                    work_root,
-                    manual_page if candidate.get("forced") else None,
-                )
-                if any(item["pageUrl"] == prepared["pageUrl"] for item in accepted):
-                    continue
-                accepted.append(prepared)
-            except WorkerError as error:
-                download_errors.append(f"{index + 1}. {error.message}")
-            except Exception as error:  # keep other candidates alive
-                download_errors.append(f"{index + 1}. {truncate_text(error, 300)}")
-    finally:
-        shutil.rmtree(work_root, ignore_errors=True)
-
-    if not accepted:
-        detail_parts = provider_errors + download_errors
-        raise WorkerError(
-            "no_candidates",
-            "Не удалось подготовить ни одного кандидата.",
-            " ".join(detail_parts)[:4000] or "Все источники отклонили загрузку.",
-        )
-    accepted.sort(key=lambda item: (float(item.get("score") or 0), int(item.get("durationMs") or 0)), reverse=True)
-    job.write("ready", candidates=accepted, warnings=provider_errors[:8])
+    job.write("ready", candidates=candidates[:12], warnings=provider_errors[:8])
 
 
 def split_artists(value: str) -> list[str]:
@@ -1026,6 +950,8 @@ def handle_confirm(github: GitHubAPI, job: JobStatus) -> None:
     candidate_id_value = env("CANDIDATE_ID", required=True)
     if not JOB_ID_RE.fullmatch(source_job_id):
         raise WorkerError("input_invalid", "Некорректный source_job_id.")
+    if not CANDIDATE_ID_RE.fullmatch(candidate_id_value):
+        raise WorkerError("input_invalid", "Некорректный candidate_id.")
     source_job = github.get_json(f"{JOBS_DIR}/{source_job_id}.json")
     if not source_job:
         raise WorkerError("source_job_missing", "Исходное задание поиска не найдено или истекло.")
@@ -1042,38 +968,40 @@ def handle_confirm(github: GitHubAPI, job: JobStatus) -> None:
     )
     if not candidate:
         raise WorkerError("candidate_missing", "Кандидат не найден в исходном задании.")
+    page_url = clean_text(candidate.get("pageUrl"), 1000)
+    if not page_url:
+        raise WorkerError("candidate_invalid", "У кандидата нет ссылки на страницу источника.")
+    validate_public_https(page_url)
 
-    previews = github.ensure_release(PREVIEWS_TAG, "Uncensor Cloud — previews")
-    asset_name = str(candidate.get("assetName") or "")
-    if not asset_name or "/" in asset_name:
-        raise WorkerError("candidate_invalid", "У кандидата некорректное имя preview-файла.")
-    asset = github.find_asset(previews, asset_name)
-    if not asset:
-        raise WorkerError("preview_missing", "Preview-файл кандидата не найден в релизе previews.")
     work_root = Path(tempfile.mkdtemp(prefix="uncensor-confirm-"))
-    preview_path = work_root / "preview.m4a"
     try:
-        github.download_asset(asset, preview_path)
-        expected_sha = str(candidate.get("sha256") or "")
-        if expected_sha and sha256_file(preview_path) != expected_sha:
-            raise WorkerError("preview_changed", "SHA-256 preview-файла не совпал. Повторите поиск.")
-        duration = ffprobe_duration(preview_path)
+        output_path, duration, downloaded_info = download_and_transcode(page_url, work_root)
+        duration_sec = int(round(duration))
+        expected_sec = int(candidate.get("durationMs") or source_job.get("trackDurationMs") or 0) // 1000
+        if expected_sec and not duration_acceptable(expected_sec, duration_sec):
+            raise WorkerError(
+                "duration_mismatch",
+                f"Длительность изменилась: ожидалось около {expected_sec} с, получено {duration_sec} с.",
+            )
         library = github.ensure_release(LIBRARY_TAG, "Uncensor Cloud — library")
         track_id = job.track_id
         final_name = f"{track_id}-{candidate_id_value}.m4a"
-        final_asset = github.upload_asset(library, final_name, preview_path, "audio/mp4")
+        final_asset = github.upload_asset(library, final_name, output_path, "audio/mp4")
         audio_url = str(final_asset.get("browser_download_url") or "")
         if not audio_url.startswith("https://"):
             raise WorkerError("github_upload", "GitHub не вернул ссылку на итоговый аудиофайл.")
-        title = job.track_title or clean_text(candidate.get("title"), 300)
-        artist = job.track_artist or clean_text(candidate.get("artist") or candidate.get("uploader"), 300)
+        title = job.track_title or clean_text(candidate.get("title") or downloaded_info.get("title"), 300)
+        artist = job.track_artist or clean_text(
+            candidate.get("artist") or candidate.get("uploader") or downloaded_info.get("artist"),
+            300,
+        )
         source = {
             "provider": candidate.get("provider") if candidate.get("provider") in ("youtube", "soundcloud") else "unknown",
-            "pageUrl": clean_text(candidate.get("pageUrl"), 1000),
+            "pageUrl": page_url,
             "title": clean_text(candidate.get("title"), 300),
             "artist": clean_text(candidate.get("artist"), 300),
             "uploader": clean_text(candidate.get("uploader"), 300),
-            "durationMs": int(candidate.get("durationMs") or 0),
+            "durationMs": duration_sec * 1000,
             "score": float(candidate.get("score") or 0),
             "warnings": candidate.get("warnings") if isinstance(candidate.get("warnings"), list) else [],
         }
@@ -1088,7 +1016,7 @@ def handle_confirm(github: GitHubAPI, job: JobStatus) -> None:
                 track_id,
                 title,
                 artist,
-                int(round(duration * 1000)),
+                duration_sec * 1000,
                 audio_url,
                 final_name,
                 source,

@@ -5,15 +5,15 @@ import {
     formatDate,
     formatDuration,
     formatDurationLong,
+    jobTiming,
     providerLabel,
     scorePercent,
-    truncate,
 } from '../lib/format.ts'
 import {
+    cancelJob,
     checkAudioUrl,
     confirmCandidate,
     isMappingEnabled,
-    pauseForPreview,
     removeMapping,
     resolveTrackForUi,
     restoreMapping,
@@ -22,7 +22,6 @@ import {
     startSearch,
 } from '../store.ts'
 import { useStore } from './useStore.ts'
-import { PreviewPlayer } from './PreviewPlayer.tsx'
 
 type Props = {
     initialTrack: TrackRef | null
@@ -31,15 +30,17 @@ type Props = {
     onOpenJobs: () => void
 }
 
-function candidateWarnings(candidate: SourceCandidate): string[] {
-    return candidate.warnings.filter(Boolean)
-}
-
 function durationDelta(targetMs: number, candidateMs: number): string {
     if (!targetMs || !candidateMs) return 'длительность не указана'
     const delta = Math.round((candidateMs - targetMs) / 1000)
     if (Math.abs(delta) <= 2) return 'длительность совпадает'
     return `длительность ${delta > 0 ? '+' : ''}${delta} с`
+}
+
+function pendingLabel(job: JobRecord): string {
+    if (job.status === 'queued') return 'В очереди GitHub Actions'
+    if (job.action === 'search') return 'Ищем подходящие записи'
+    return 'Публикуем выбранную запись'
 }
 
 export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs }: Props) {
@@ -52,16 +53,15 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
     const [durationSec, setDurationSec] = useState(Math.round((seed?.durationMs || 0) / 1000))
     const [sourceUrl, setSourceUrl] = useState('')
     const [manualUrl, setManualUrl] = useState('')
-    const [manualPreview, setManualPreview] = useState('')
-    const [manualPreviewed, setManualPreviewed] = useState(false)
-    const [previewKey, setPreviewKey] = useState('')
+    const [manualOpen, setManualOpen] = useState(initialAction === 'manual')
     const [actionError, setActionError] = useState('')
     const [busy, setBusy] = useState('')
     const [confirmRemove, setConfirmRemove] = useState(false)
     const [urlCheck, setUrlCheck] = useState('')
+    const [now, setNow] = useState(Date.now())
     const initializedFor = useRef('')
     const lastSeedId = useRef('')
-    const manualSection = useRef<HTMLDivElement | null>(null)
+    const manualSection = useRef<HTMLDetailsElement | null>(null)
 
     useEffect(() => {
         if (!seed?.id) {
@@ -124,17 +124,21 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
             ) ?? null
         )
     }, [state.jobs, track])
+    const activeJob = confirmJob ?? (searchJob && searchJob.status !== 'ready' ? searchJob : null)
 
     useEffect(() => {
-        if (initialAction === 'manual') {
-            setTimeout(() => manualSection.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 50)
-        }
+        if (!activeJob) return
+        const timer = window.setInterval(() => setNow(Date.now()), 1000)
+        return () => window.clearInterval(timer)
+    }, [activeJob?.id, activeJob?.status, activeJob?.startedAt])
+
+    useEffect(() => {
+        if (initialAction !== 'manual') return
+        setManualOpen(true)
+        window.setTimeout(() => manualSection.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }), 50)
     }, [initialAction, track?.id])
 
     useEffect(() => {
-        setPreviewKey('')
-        setManualPreview('')
-        setManualPreviewed(false)
         setActionError('')
         setUrlCheck('')
         setConfirmRemove(false)
@@ -164,13 +168,12 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
     const runSearch = async () => {
         setActionError('')
         if (!title.trim() || !artist.trim()) {
-            setActionError('Заполните исполнителя и название. Это улучшит поиск.')
+            setActionError('Заполните исполнителя и название.')
             return
         }
         setBusy('search')
         try {
             await startSearch(track, resolvedMeta, sourceUrl.trim())
-            setPreviewKey('')
         } catch (error) {
             setActionError(error instanceof Error ? error.message : String(error))
         } finally {
@@ -184,7 +187,6 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
         setBusy(`confirm:${candidate.id}`)
         try {
             await confirmCandidate(searchJob, candidate)
-            setPreviewKey('')
         } catch (error) {
             setActionError(error instanceof Error ? error.message : String(error))
         } finally {
@@ -194,10 +196,6 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
 
     const runManual = async () => {
         setActionError('')
-        if (!manualPreviewed) {
-            setActionError('Сначала прослушайте запись. Автоматическая проверка не доказывает отсутствие цензуры.')
-            return
-        }
         if (!manualUrl.trim()) {
             setActionError('Вставьте прямую ссылку на аудиофайл.')
             return
@@ -205,7 +203,6 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
         setBusy('manual')
         try {
             await startManualAdd(track, resolvedMeta, manualUrl.trim())
-            setPreviewKey('')
         } catch (error) {
             setActionError(error instanceof Error ? error.message : String(error))
         } finally {
@@ -239,21 +236,37 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
         setUrlCheck('')
         try {
             const result = await checkAudioUrl(mapping.audioUrl)
-            setUrlCheck(`${result.ok ? 'Доступен' : 'Проблема'}: ${result.message}${result.contentType ? ` (${result.contentType})` : ''}`)
+            setUrlCheck(`${result.ok ? 'Доступен' : 'Проблема'}: ${result.message}`)
         } finally {
             setBusy('')
         }
     }
 
+    const cancelActive = async () => {
+        if (!activeJob) return
+        setBusy(`cancel:${activeJob.id}`)
+        setActionError('')
+        try {
+            await cancelJob(activeJob.id)
+        } catch (error) {
+            setActionError(error instanceof Error ? error.message : String(error))
+        } finally {
+            setBusy('')
+        }
+    }
+
+    const timing = activeJob ? jobTiming(activeJob, now) : null
+    const readyCandidates = searchJob?.status === 'ready' ? (searchJob.candidates || []).slice().sort((a, b) => b.score - a.score) : []
+
     return (
         <div className="uc-stack">
             <section className="uc-card uc-track-card">
                 <div className="uc-track-main">
-                    <div>
-                        <div className="uc-eyebrow">Трек Яндекс Музыки</div>
+                    <div className="uc-track-copy">
+                        <div className="uc-eyebrow">Сейчас в фокусе</div>
                         <div className="uc-track-title">{track.title || resolvedMeta.title || `Трек ${track.id}`}</div>
                         <div className="uc-muted">
-                            {track.artist || resolvedMeta.artist || 'Исполнитель не указан'} · ID {track.id}
+                            {track.artist || resolvedMeta.artist || 'Исполнитель не указан'}
                             {track.durationMs ? ` · ${formatDuration(track.durationMs)}` : ''}
                         </div>
                     </div>
@@ -261,298 +274,325 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                         {mapping ? (enabled ? 'Замена активна' : 'Замена выключена') : 'Замены нет'}
                     </div>
                 </div>
-                {resolving ? <div className="uc-muted uc-small">Уточняем метаданные трека…</div> : null}
+                {resolving ? <div className="uc-muted uc-small uc-mt">Уточняем метаданные…</div> : null}
                 {mapping ? (
                     <div className="uc-mapping">
                         <div className="uc-mapping-row">
-                            <div>
-                                <div className="uc-label">Облачная запись</div>
-                                <a className="uc-link uc-break" href={mapping.audioUrl} target="_blank" rel="noreferrer">
-                                    {truncate(mapping.audioUrl, 96)}
-                                </a>
-                                <div className="uc-muted uc-small">
-                                    {providerLabel(mapping.source.provider)} · добавлено {formatDate(mapping.addedAt)}
+                            <div className="uc-min0">
+                                <div className="uc-label">Источник</div>
+                                <div className="uc-source-line">
+                                    {providerLabel(mapping.source.provider)}
                                     {mapping.source.pageUrl ? (
-                                        <>
-                                            {' · '}
-                                            <a className="uc-link" href={mapping.source.pageUrl} target="_blank" rel="noreferrer">
-                                                страница источника
-                                            </a>
-                                        </>
+                                        <a className="uc-link" href={mapping.source.pageUrl} target="_blank" rel="noreferrer">
+                                            открыть страницу
+                                        </a>
                                     ) : null}
+                                    <span className="uc-muted">· {formatDate(mapping.addedAt)}</span>
                                 </div>
                             </div>
-                            <div className="uc-row-actions">
+                            <div className="uc-row-actions uc-mt-0">
                                 <button
                                     type="button"
                                     className={`uc-toggle ${enabled ? 'uc-toggle-on' : ''}`}
                                     disabled={busy === 'toggle'}
                                     onClick={() => void toggleMapping()}
+                                    title={enabled ? 'Выключить замену' : 'Включить замену'}
                                 >
                                     <span className="uc-toggle-dot" />
-                                    {enabled ? 'Включена' : 'Выключена'}
+                                    {enabled ? 'Вкл.' : 'Выкл.'}
                                 </button>
                                 {state.removed.includes(track.id) ? (
-                                    <button type="button" className="uc-btn uc-btn-small" disabled={busy === 'restore'} onClick={() => {
-                                        setBusy('restore')
-                                        void restoreMapping(track.id).finally(() => setBusy(''))
-                                    }}>
+                                    <button
+                                        type="button"
+                                        className="uc-btn uc-btn-small"
+                                        disabled={busy === 'restore'}
+                                        onClick={() => {
+                                            setBusy('restore')
+                                            void restoreMapping(track.id).finally(() => setBusy(''))
+                                        }}
+                                    >
                                         Вернуть
                                     </button>
                                 ) : null}
                             </div>
                         </div>
-                        <div className="uc-row-actions uc-wrap">
-                            <button type="button" className="uc-btn uc-btn-small" disabled={busy === 'check'} onClick={() => void verifyUrl()}>
-                                Проверить файл
-                            </button>
-                            {confirmRemove ? (
-                                <>
-                                    <button type="button" className="uc-btn uc-btn-small uc-danger" disabled={busy === 'remove'} onClick={() => void remove()}>
-                                        Да, убрать связь
+                        <details className="uc-more">
+                            <summary>Файл и удаление</summary>
+                            <div className="uc-more-body">
+                                <a className="uc-link uc-break" href={mapping.audioUrl} target="_blank" rel="noreferrer">
+                                    {mapping.audioUrl}
+                                </a>
+                                <div className="uc-row-actions uc-wrap">
+                                    <button type="button" className="uc-btn uc-btn-small" disabled={busy === 'check'} onClick={() => void verifyUrl()}>
+                                        Проверить файл
                                     </button>
-                                    <button type="button" className="uc-btn uc-btn-small" onClick={() => setConfirmRemove(false)}>
-                                        Отмена
-                                    </button>
-                                </>
-                            ) : (
-                                <button type="button" className="uc-btn uc-btn-small" onClick={() => setConfirmRemove(true)}>
-                                    Удалить связь
-                                </button>
-                            )}
-                            <span className="uc-muted uc-small">Файл в Releases не удаляется.</span>
-                        </div>
-                        {urlCheck ? <div className={`uc-check ${urlCheck.startsWith('Доступен') ? 'uc-ok-text' : 'uc-error-text'}`}>{urlCheck}</div> : null}
+                                    {confirmRemove ? (
+                                        <>
+                                            <button type="button" className="uc-btn uc-btn-small uc-danger" disabled={busy === 'remove'} onClick={() => void remove()}>
+                                                Убрать связь
+                                            </button>
+                                            <button type="button" className="uc-btn uc-btn-small" onClick={() => setConfirmRemove(false)}>
+                                                Отмена
+                                            </button>
+                                        </>
+                                    ) : (
+                                        <button type="button" className="uc-btn uc-btn-small" onClick={() => setConfirmRemove(true)}>
+                                            Удалить связь
+                                        </button>
+                                    )}
+                                    <span className="uc-muted uc-small">Файл в Releases остаётся.</span>
+                                </div>
+                                {urlCheck ? (
+                                    <div className={`uc-check ${urlCheck.startsWith('Доступен') ? 'uc-ok-text' : 'uc-error-text'}`}>{urlCheck}</div>
+                                ) : null}
+                            </div>
+                        </details>
                     </div>
                 ) : null}
             </section>
 
-            <section className="uc-card">
-                <div className="uc-section-head">
-                    <div>
-                        <div className="uc-eyebrow">Поиск в облаке</div>
-                        <div className="uc-section-title">Найти альтернативную запись</div>
-                    </div>
-                    <button type="button" className="uc-link" onClick={onOpenJobs}>
-                        Задания
-                    </button>
-                </div>
-                <div className="uc-hint">
-                    Поиск идёт через GitHub Actions. Автоматическое совпадение названия не доказывает отсутствие цензуры:
-                    обязательно прослушайте кандидата.
-                </div>
-                <div className="uc-grid uc-grid-2">
-                    <label className="uc-field">
-                        <span>Исполнитель</span>
-                        <input value={artist} onChange={event => setArtist(event.target.value)} placeholder="Например, Кино" />
-                    </label>
-                    <label className="uc-field">
-                        <span>Название</span>
-                        <input value={title} onChange={event => setTitle(event.target.value)} placeholder="Название трека" />
-                    </label>
-                    <label className="uc-field">
-                        <span>Длительность, секунд</span>
-                        <input
-                            type="number"
-                            min={0}
-                            max={7200}
-                            value={durationSec || ''}
-                            onChange={event => setDurationSec(Math.max(0, Number(event.target.value) || 0))}
-                            placeholder="Например, 245"
-                        />
-                    </label>
-                    <label className="uc-field">
-                        <span>Страница YouTube/SoundCloud (необязательно)</span>
-                        <input
-                            value={sourceUrl}
-                            onChange={event => setSourceUrl(event.target.value)}
-                            placeholder="https://www.youtube.com/watch?v=…"
-                        />
-                    </label>
-                </div>
-                <div className="uc-row-actions uc-wrap">
-                    <button type="button" className="uc-btn uc-btn-primary" disabled={busy === 'search' || !state.hasToken} onClick={() => void runSearch()}>
-                        {busy === 'search' ? 'Отправляем…' : 'Искать в облаке'}
-                    </button>
-                    <button type="button" className="uc-btn" onClick={() => manualSection.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })}>
-                        Своя ссылка на аудио
-                    </button>
-                    {!state.hasToken ? <span className="uc-muted uc-small">Для поиска нужен токен в разделе «Мой GitHub».</span> : null}
-                </div>
-            </section>
-
-            {searchJob ? (
-                <section className="uc-card uc-candidates-card">
+            {activeJob && timing ? (
+                <section className="uc-card uc-progress-card">
                     <div className="uc-section-head">
                         <div>
-                            <div className="uc-eyebrow">Задание {searchJob.id.slice(0, 8)}</div>
-                            <div className="uc-section-title">
-                                {searchJob.status === 'ready' ? 'Кандидаты' : searchJob.status === 'queued' ? 'В очереди GitHub Actions' : 'Ищем и готовим аудио'}
-                            </div>
+                            <div className="uc-eyebrow">GitHub Actions</div>
+                            <div className="uc-section-title">{pendingLabel(activeJob)}</div>
                         </div>
-                        {searchJob.runUrl ? (
-                            <a className="uc-link uc-small" href={searchJob.runUrl} target="_blank" rel="noreferrer">
+                        <span className="uc-eta">{timing.label}</span>
+                    </div>
+                    <div className="uc-progress-track" aria-hidden="true">
+                        <span style={{ width: `${Math.max(4, Math.round(timing.progress * 100))}%` }} />
+                    </div>
+                    <div className="uc-muted uc-small uc-mt">
+                        Можно закрыть панель: задание продолжится, статус сохранится.
+                    </div>
+                    <div className="uc-row-actions uc-wrap">
+                        <button
+                            type="button"
+                            className="uc-btn uc-btn-small"
+                            disabled={busy === `cancel:${activeJob.id}`}
+                            onClick={() => void cancelActive()}
+                        >
+                            {busy === `cancel:${activeJob.id}` ? 'Отменяем…' : 'Отменить'}
+                        </button>
+                        {activeJob.runUrl ? (
+                            <a className="uc-link uc-small" href={activeJob.runUrl} target="_blank" rel="noreferrer">
                                 Журнал Actions
                             </a>
                         ) : null}
+                        {activeJob.status === 'running' && activeJob.error ? (
+                            <span className="uc-error-text uc-small">{activeJob.error.message}</span>
+                        ) : null}
                     </div>
-                    {searchJob.status !== 'ready' ? (
-                        <div className="uc-progress-note">
-                            <span className="uc-dot-pulse" />
-                            Задание привязано к треку {searchJob.trackId}. Можно закрыть панель — поиск продолжится, статус
-                            сохранится.
+                </section>
+            ) : null}
+
+            {!activeJob ? (
+                <section className="uc-card">
+                    <div className="uc-section-head">
+                        <div>
+                            <div className="uc-eyebrow">Поиск</div>
+                            <div className="uc-section-title">
+                                {readyCandidates.length ? `${readyCandidates.length} кандидатов` : 'Найти замену'}
+                            </div>
                         </div>
-                    ) : null}
-                    {searchJob.error ? <div className="uc-inline-error">{searchJob.error.message}</div> : null}
-                    {searchJob.status === 'ready' ? (
+                        <button type="button" className="uc-link uc-small" onClick={onOpenJobs}>
+                            Задания
+                        </button>
+                    </div>
+
+                    {readyCandidates.length ? (
                         <>
                             <div className="uc-hint">
-                                Прослушайте записи и выберите ту, в которой нет цензуры. Кнопка сохранения публикует выбранный
-                                файл в ваш GitHub Releases и привязывает его к ID {track.id}.
+                                Файл скачается и проверится только после нажатия «Сохранить». До этого в Releases ничего не
+                                публикуется.
                             </div>
                             <div className="uc-candidate-list">
-                                {(searchJob.candidates || []).length ? (
-                                    (searchJob.candidates || [])
-                                        .slice()
-                                        .sort((a, b) => b.score - a.score)
-                                        .map(candidate => {
-                                            const key = `candidate:${candidate.id}`
-                                            const confirming = busy === `confirm:${candidate.id}`
-                                            return (
-                                                <article className="uc-candidate" key={candidate.id}>
-                                                    <div className="uc-candidate-head">
-                                                        <div className="uc-candidate-title">{candidate.title}</div>
-                                                        <div className="uc-badges">
-                                                            <span className={`uc-badge uc-badge-${candidate.provider}`}>{providerLabel(candidate.provider)}</span>
-                                                            <span className="uc-badge">совпадение {scorePercent(candidate.score)}</span>
-                                                            <span className="uc-badge">{formatDuration(candidate.durationMs)}</span>
-                                                        </div>
-                                                    </div>
-                                                    <div className="uc-muted uc-small">
-                                                        {candidate.artist || candidate.uploader || 'Автор не указан'} · {durationDelta(track.durationMs || 0, candidate.durationMs)}
-                                                    </div>
-                                                    {candidateWarnings(candidate).length ? (
-                                                        <div className="uc-warning-list">
-                                                            {candidateWarnings(candidate).map(warning => (
-                                                                <span className="uc-warn-badge" key={warning}>{warning}</span>
-                                                            ))}
-                                                        </div>
-                                                    ) : null}
-                                                    <PreviewPlayer
-                                                        src={candidate.previewUrl}
-                                                        title={candidate.title}
-                                                        subtitle={`${providerLabel(candidate.provider)} · ${candidate.artist || candidate.uploader || 'автор не указан'}`}
-                                                        durationMs={candidate.durationMs}
-                                                        active={previewKey === key}
-                                                        onActivate={() => setPreviewKey(key)}
-                                                        onBeforePlay={async () => {
-                                                            await pauseForPreview()
-                                                        }}
-                                                        pageUrl={candidate.pageUrl}
-                                                        compact
-                                                    />
-                                                    <div className="uc-row-actions">
-                                                        <button
-                                                            type="button"
-                                                            className="uc-btn uc-btn-primary uc-btn-small"
-                                                            disabled={confirming || Boolean(confirmJob)}
-                                                            onClick={() => void runConfirm(candidate)}
-                                                        >
-                                                            {confirming || confirmJob ? 'Сохраняем…' : 'Подменить и сохранить'}
-                                                        </button>
-                                                        <span className="uc-muted uc-small">
-                                                            Запись будет скопирована в Releases и станет постоянной.
-                                                        </span>
-                                                    </div>
-                                                </article>
-                                            )
-                                        })
-                                ) : (
-                                    <div className="uc-empty">
-                                        <div className="uc-empty-title">Кандидатов нет</div>
-                                        <div className="uc-muted">Измените название/исполнителя или укажите конкретную страницу источника.</div>
-                                    </div>
-                                )}
+                                {readyCandidates.map(candidate => {
+                                    const confirming = busy === `confirm:${candidate.id}`
+                                    return (
+                                        <article className="uc-candidate" key={candidate.id}>
+                                            <div className="uc-candidate-main">
+                                                <div className="uc-candidate-title">{candidate.title}</div>
+                                                <div className="uc-muted uc-small">
+                                                    {candidate.artist || candidate.uploader || 'Автор не указан'} ·{' '}
+                                                    {durationDelta(track.durationMs || 0, candidate.durationMs)}
+                                                </div>
+                                                <div className="uc-badges uc-mt">
+                                                    <span className={`uc-badge uc-badge-${candidate.provider}`}>
+                                                        {providerLabel(candidate.provider)}
+                                                    </span>
+                                                    <span className="uc-badge">{scorePercent(candidate.score)}</span>
+                                                    <span className="uc-badge">{formatDuration(candidate.durationMs)}</span>
+                                                    {candidate.warnings.slice(0, 3).map(warning => (
+                                                        <span className="uc-warn-badge" key={warning}>{warning}</span>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                            <div className="uc-candidate-actions">
+                                                <a className="uc-link uc-small" href={candidate.pageUrl} target="_blank" rel="noreferrer">
+                                                    Источник
+                                                </a>
+                                                <button
+                                                    type="button"
+                                                    className="uc-btn uc-btn-primary uc-btn-small"
+                                                    disabled={confirming}
+                                                    onClick={() => void runConfirm(candidate)}
+                                                >
+                                                    {confirming ? 'Отправляем…' : 'Сохранить'}
+                                                </button>
+                                            </div>
+                                        </article>
+                                    )
+                                })}
                             </div>
+                            <details className="uc-more uc-more-after">
+                                <summary>Искать заново</summary>
+                                <div className="uc-more-body">
+                                    <SearchFields
+                                        artist={artist}
+                                        title={title}
+                                        durationSec={durationSec}
+                                        sourceUrl={sourceUrl}
+                                        onArtist={setArtist}
+                                        onTitle={setTitle}
+                                        onDuration={setDurationSec}
+                                        onSource={setSourceUrl}
+                                    />
+                                    <div className="uc-row-actions">
+                                        <button type="button" className="uc-btn" disabled={busy === 'search' || !state.hasToken} onClick={() => void runSearch()}>
+                                            {busy === 'search' ? 'Отправляем…' : 'Искать заново'}
+                                        </button>
+                                    </div>
+                                </div>
+                            </details>
                         </>
-                    ) : null}
+                    ) : (
+                        <>
+                            <div className="uc-hint">
+                                Поиск читает только названия, авторов и длительность. Аудио скачивается после выбора.
+                            </div>
+                            <div className="uc-search-primary">
+                                <button
+                                    type="button"
+                                    className="uc-btn uc-btn-primary"
+                                    disabled={busy === 'search' || !state.hasToken}
+                                    onClick={() => void runSearch()}
+                                >
+                                    {busy === 'search' ? 'Отправляем…' : 'Найти замену'}
+                                </button>
+                                <span className="uc-muted uc-small">
+                                    {state.hasToken ? 'Обычно 30–60 секунд.' : 'Нужен токен в разделе «GitHub».'}
+                                </span>
+                            </div>
+                            <details className="uc-more uc-more-after">
+                                <summary>Уточнить запрос</summary>
+                                <div className="uc-more-body">
+                                    <SearchFields
+                                        artist={artist}
+                                        title={title}
+                                        durationSec={durationSec}
+                                        sourceUrl={sourceUrl}
+                                        onArtist={setArtist}
+                                        onTitle={setTitle}
+                                        onDuration={setDurationSec}
+                                        onSource={setSourceUrl}
+                                    />
+                                    <div className="uc-row-actions">
+                                        <button type="button" className="uc-btn" disabled={busy === 'search' || !state.hasToken} onClick={() => void runSearch()}>
+                                            Искать с этими данными
+                                        </button>
+                                    </div>
+                                </div>
+                            </details>
+                        </>
+                    )}
                 </section>
             ) : null}
 
-            {confirmJob ? (
-                <section className="uc-card uc-progress-note">
-                    <span className="uc-dot-pulse" />
-                    Публикуем выбранную запись в GitHub Releases и обновляем list.json. Не закрывайте задачу: статус сохранится
-                    в разделе «Задания».
-                </section>
-            ) : null}
-
-            <section className="uc-card" ref={manualSection}>
-                <div className="uc-section-head">
-                    <div>
-                        <div className="uc-eyebrow">Ручное добавление</div>
-                        <div className="uc-section-title">Своя ссылка на аудиофайл</div>
+            <details
+                className="uc-card uc-manual"
+                ref={manualSection}
+                open={manualOpen}
+                onToggle={event => setManualOpen((event.currentTarget as HTMLDetailsElement).open)}
+            >
+                <summary>
+                    <span>Добавить свою ссылку</span>
+                    <span className="uc-muted uc-small">прямой HTTPS-файл</span>
+                </summary>
+                <div className="uc-manual-body">
+                    <div className="uc-hint">
+                        Подойдёт постоянная ссылка на m4a, mp3, aac, ogg, opus, flac или wav. Страница YouTube или
+                        SoundCloud — нет.
+                    </div>
+                    <div className="uc-inline">
+                        <input
+                            className="uc-grow"
+                            value={manualUrl}
+                            onChange={event => setManualUrl(event.target.value)}
+                            placeholder="https://github.com/…/releases/download/library/track.m4a"
+                        />
+                        <button
+                            type="button"
+                            className="uc-btn uc-btn-primary"
+                            disabled={busy === 'manual' || !manualUrl.trim() || !state.hasToken}
+                            onClick={() => void runManual()}
+                        >
+                            {busy === 'manual' ? 'Отправляем…' : 'Сохранить'}
+                        </button>
                     </div>
                 </div>
-                <div className="uc-hint">
-                    Вставьте прямую HTTPS-ссылку на аудиофайл: m4a, mp3, aac, ogg, opus, flac или wav. Это может быть файл из
-                    Releases вашего репозитория. Страница YouTube, SoundCloud или страница релиза не подойдёт.
-                </div>
-                <div className="uc-inline">
-                    <input
-                        className="uc-grow"
-                        value={manualUrl}
-                        onChange={event => {
-                            setManualUrl(event.target.value)
-                            setManualPreview('')
-                            setManualPreviewed(false)
-                        }}
-                        placeholder="https://github.com/владелец/репозиторий/releases/download/library/track.m4a"
-                    />
-                    <button
-                        type="button"
-                        className="uc-btn"
-                        disabled={!manualUrl.trim()}
-                        onClick={() => {
-                            setManualPreview(manualUrl.trim())
-                            setManualPreviewed(false)
-                            setActionError('')
-                        }}
-                    >
-                        Проверить и прослушать
-                    </button>
-                </div>
-                {manualPreview ? (
-                    <PreviewPlayer
-                        src={manualPreview}
-                        title={title || 'Своя запись'}
-                        subtitle={artist || 'Ручная ссылка'}
-                        durationMs={resolvedMeta.durationMs}
-                        active={previewKey === 'manual'}
-                        onActivate={() => setPreviewKey('manual')}
-                        onStarted={() => setManualPreviewed(true)}
-                        onBeforePlay={async () => {
-                            await pauseForPreview()
-                        }}
-                        pageUrl={manualPreview}
-                        compact
-                    />
-                ) : null}
-                <div className="uc-row-actions uc-wrap">
-                    <button type="button" className="uc-btn uc-btn-primary" disabled={busy === 'manual' || !manualPreviewed || !state.hasToken} onClick={() => void runManual()}>
-                        {busy === 'manual' ? 'Отправляем…' : 'Подменить и сохранить'}
-                    </button>
-                    <span className="uc-muted uc-small">
-                        Файл будет скачан GitHub Actions, проверен и скопирован в Releases вашего репозитория.
-                    </span>
-                </div>
-            </section>
+            </details>
 
             {actionError ? <div className="uc-inline-error">{actionError}</div> : null}
             <div className="uc-muted uc-small">
-                Длительность: {formatDurationLong(resolvedMeta.durationMs)}. Поиск учитывает исполнителя, название,
-                длительность и версию записи, но финальное решение всегда за вами.
+                {formatDurationLong(resolvedMeta.durationMs)} · проверка не определяет цензуру, финальное решение за вами.
             </div>
+        </div>
+    )
+}
+
+type SearchFieldsProps = {
+    artist: string
+    title: string
+    durationSec: number
+    sourceUrl: string
+    onArtist: (value: string) => void
+    onTitle: (value: string) => void
+    onDuration: (value: number) => void
+    onSource: (value: string) => void
+}
+
+function SearchFields({ artist, title, durationSec, sourceUrl, onArtist, onTitle, onDuration, onSource }: SearchFieldsProps) {
+    return (
+        <div className="uc-grid uc-grid-2">
+            <label className="uc-field">
+                <span>Исполнитель</span>
+                <input value={artist} onChange={event => onArtist(event.target.value)} placeholder="Например, Кино" />
+            </label>
+            <label className="uc-field">
+                <span>Название</span>
+                <input value={title} onChange={event => onTitle(event.target.value)} placeholder="Название трека" />
+            </label>
+            <label className="uc-field">
+                <span>Длительность, секунд</span>
+                <input
+                    type="number"
+                    min={0}
+                    max={7200}
+                    value={durationSec || ''}
+                    onChange={event => onDuration(Math.max(0, Number(event.target.value) || 0))}
+                    placeholder="245"
+                />
+            </label>
+            <label className="uc-field">
+                <span>Страница источника</span>
+                <input
+                    value={sourceUrl}
+                    onChange={event => onSource(event.target.value)}
+                    placeholder="YouTube или SoundCloud, необязательно"
+                />
+            </label>
         </div>
     )
 }

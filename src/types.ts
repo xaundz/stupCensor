@@ -23,10 +23,6 @@ export type SourceCandidate = {
     durationMs: number
     score: number
     warnings: string[]
-    previewUrl: string
-    assetName: string
-    sizeBytes: number
-    sha256: string
 }
 
 export type SourceInfo = {
@@ -97,6 +93,11 @@ export type JobRecord = {
     }
     error?: JobError
     runUrl?: string
+    runId?: number
+    startedAt?: string
+    finishedAt?: string
+    etaSeconds?: number
+    cancelRequested?: boolean
     processed?: boolean
     silent?: boolean
     manualUrl?: string
@@ -135,6 +136,7 @@ export type WorkflowRun = {
     conclusion: string | null
     htmlUrl: string
     displayTitle: string
+    startedAt?: string
 }
 
 export type SetupResult = {

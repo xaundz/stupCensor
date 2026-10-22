@@ -5,7 +5,6 @@ import { disconnectGitHub, saveSetup } from '../store.ts'
 import { useStore } from './useStore.ts'
 
 const TOKEN_URL = 'https://github.com/settings/personal-access-tokens/new'
-const TOKENS_URL = 'https://github.com/settings/tokens'
 
 export function SettingsTab() {
     const state = useStore()
@@ -30,7 +29,7 @@ export function SettingsTab() {
         try {
             const result = await saveSetup({ repo, token, rememberToken: remember })
             setToken('')
-            setSuccess(`Подключено: ${result.repo.fullName}. Workflow «${result.workflow.name}» активен.`)
+            setSuccess(`Подключено: ${result.repo.fullName}. Workflow активен.`)
         } catch (submitError) {
             setError(submitError instanceof Error ? submitError.message : String(submitError))
         } finally {
@@ -44,7 +43,7 @@ export function SettingsTab() {
         try {
             await disconnectGitHub(disconnect === 'repo')
             setDisconnect('')
-            setSuccess(disconnect === 'repo' ? 'Репозиторий отключён.' : 'Токен удалён, библиотека осталась в режиме чтения.')
+            setSuccess(disconnect === 'repo' ? 'Репозиторий отключён.' : 'Токен удалён, остался режим чтения.')
         } catch (removeError) {
             setError(removeError instanceof Error ? removeError.message : String(removeError))
         } finally {
@@ -57,16 +56,16 @@ export function SettingsTab() {
             <section className="uc-card">
                 <div className="uc-section-head">
                     <div>
-                        <div className="uc-eyebrow">Мой GitHub</div>
-                        <div className="uc-section-title">Ваш публичный репозиторий</div>
+                        <div className="uc-eyebrow">Подключение</div>
+                        <div className="uc-section-title">Ваш GitHub</div>
                     </div>
                     <span className={`uc-status-pill ${state.config ? 'uc-ok' : ''}`}>
                         {state.config ? (state.hasToken ? 'Подключён' : 'Только чтение') : 'Не подключён'}
                     </span>
                 </div>
                 <div className="uc-hint">
-                    Аддон хранит аудио и публичный индекс в вашем GitHub-репозитории. Репозиторий должен быть публичным:
-                    Яндекс Музыке нужны прямые ссылки на файлы без авторизации. Токен даёт доступ к Actions и Contents.
+                    Нужен публичный репозиторий: Яндекс Музыке требуются прямые ссылки без авторизации. Токен даёт
+                    доступ только к Actions и Contents выбранного репозитория.
                 </div>
                 <div className="uc-grid uc-grid-1">
                     <label className="uc-field">
@@ -74,19 +73,19 @@ export function SettingsTab() {
                         <input
                             value={repo}
                             onChange={event => setRepo(event.target.value)}
-                            placeholder="владелец/репозиторий или https://github.com/владелец/репозиторий"
+                            placeholder="владелец/репозиторий"
                             autoComplete="off"
                         />
                     </label>
                     <label className="uc-field">
-                        <span>Fine-grained token {state.hasToken && !token ? '(уже сохранён, оставьте пустым)' : ''}</span>
+                        <span>Fine-grained token {state.hasToken && !token ? '(уже сохранён)' : ''}</span>
                         <div className="uc-inline">
                             <input
                                 className="uc-grow"
                                 type={showToken ? 'text' : 'password'}
                                 value={token}
                                 onChange={event => setToken(event.target.value)}
-                                placeholder={state.hasToken ? 'Токен сохранён' : 'github_pat_…'}
+                                placeholder={state.hasToken ? 'Оставьте пустым, чтобы использовать сохранённый' : 'github_pat_…'}
                                 autoComplete="off"
                                 spellCheck={false}
                             />
@@ -98,64 +97,49 @@ export function SettingsTab() {
                     <label className="uc-checkbox">
                         <input type="checkbox" checked={remember} onChange={event => setRemember(event.target.checked)} />
                         <span>
-                            Хранить токен в локальном хранилище аддона
-                            <span className="uc-muted uc-small"> Если выключить, после перезапуска останется режим чтения и поиск не запустится.</span>
+                            Хранить токен в локальном хранилище PulseSync
+                            <span className="uc-muted uc-small"> Без токена останется режим чтения.</span>
                         </span>
                     </label>
                 </div>
                 <div className="uc-row-actions uc-wrap">
                     <button type="button" className="uc-btn uc-btn-primary" disabled={saving || !repo.trim()} onClick={() => void submit()}>
-                        {saving ? 'Проверяем…' : state.config ? 'Проверить и сохранить' : 'Подключить'}
+                        {saving ? 'Проверяем…' : state.config ? 'Сохранить' : 'Подключить'}
                     </button>
-                    <a className="uc-btn uc-btn-small" href={TOKEN_URL} target="_blank" rel="noreferrer">
-                        Создать fine-grained token
+                    <a className="uc-link uc-small" href={TOKEN_URL} target="_blank" rel="noreferrer">
+                        Создать токен
                     </a>
                 </div>
                 {error ? <div className="uc-inline-error">{error}</div> : null}
                 {success ? <div className="uc-check uc-ok-text">{success}</div> : null}
-                <div className="uc-muted uc-small">
-                    Токен передаётся только на api.github.com. Не вставляйте его в text-ссылки, index или workflow inputs.
-                </div>
+                <div className="uc-muted uc-small uc-mt">Токен не попадает в репозиторий и не передаётся в workflow.</div>
             </section>
 
-            <section className="uc-card">
-                <div className="uc-eyebrow">Состояние подключения</div>
-                <div className="uc-section-title">Проверка доступа</div>
-                {state.config ? (
+            {state.config ? (
+                <section className="uc-card">
+                    <div className="uc-section-head">
+                        <div>
+                            <div className="uc-eyebrow">Состояние</div>
+                            <div className="uc-section-title">Доступ</div>
+                        </div>
+                        {state.workflow?.htmlUrl ? (
+                            <a className="uc-link uc-small" href={state.workflow.htmlUrl} target="_blank" rel="noreferrer">
+                                Actions
+                            </a>
+                        ) : null}
+                    </div>
                     <div className="uc-kv">
                         <div><span>Репозиторий</span><strong>{state.config.repo}</strong></div>
                         <div><span>Ветка</span><strong>{state.config.branch}</strong></div>
-                        <div><span>Публичность</span><strong>{state.repoInfo ? (state.repoInfo.private ? 'приватный — не подходит' : 'публичный') : 'проверено при подключении'}</strong></div>
-                        <div><span>Права на запись</span><strong>{state.repoInfo?.canPush === undefined ? 'не проверялись' : state.repoInfo.canPush ? 'есть' : 'нет / токен только на чтение'}</strong></div>
-                        <div>
-                            <span>Workflow</span>
-                            <strong>
-                                {state.workflow ? `${state.workflow.name} · ${state.workflow.state}` : 'не проверялся в этой сессии'}
-                            </strong>
-                        </div>
-                        <div><span>Токен</span><strong>{state.hasToken ? 'сохранён' : 'не сохранён (режим чтения)'}</strong></div>
+                        <div><span>Видимость</span><strong>{state.repoInfo?.private ? 'приватный — не подходит' : 'публичный'}</strong></div>
+                        <div><span>Запись</span><strong>{state.repoInfo?.canPush === undefined ? 'не проверялась' : state.repoInfo.canPush ? 'есть' : 'только чтение'}</strong></div>
+                        <div><span>Workflow</span><strong>{state.workflow ? state.workflow.state : 'проверен при подключении'}</strong></div>
                     </div>
-                ) : (
-                    <div className="uc-muted">Подключите репозиторий, чтобы читать list.json и запускать поиск.</div>
-                )}
-                {state.workflow?.htmlUrl ? (
-                    <a className="uc-link" href={state.workflow.htmlUrl} target="_blank" rel="noreferrer">
-                        Открыть workflow в GitHub
-                    </a>
-                ) : null}
-                {state.config ? (
                     <div className="uc-row-actions uc-wrap">
-                        {disconnect === 'repo' ? (
+                        {disconnect === 'repo' || disconnect === 'token' ? (
                             <>
                                 <button type="button" className="uc-btn uc-btn-small uc-danger" disabled={saving} onClick={() => void remove()}>
-                                    Да, отключить репозиторий
-                                </button>
-                                <button type="button" className="uc-btn uc-btn-small" onClick={() => setDisconnect('')}>Отмена</button>
-                            </>
-                        ) : disconnect === 'token' ? (
-                            <>
-                                <button type="button" className="uc-btn uc-btn-small uc-danger" disabled={saving} onClick={() => void remove()}>
-                                    Да, удалить токен
+                                    {disconnect === 'repo' ? 'Отключить репозиторий' : 'Удалить токен'}
                                 </button>
                                 <button type="button" className="uc-btn uc-btn-small" onClick={() => setDisconnect('')}>Отмена</button>
                             </>
@@ -172,58 +156,42 @@ export function SettingsTab() {
                             </>
                         )}
                     </div>
-                ) : null}
-            </section>
+                </section>
+            ) : null}
 
             <section className="uc-card">
-                <div className="uc-eyebrow">stupidCensor</div>
-                <div className="uc-section-title">Поведение аддона</div>
-                <div className="uc-stack uc-stack-tight">
-                    <label className="uc-checkbox">
-                        <input
-                            type="checkbox"
-                            checked={preferences.autoApply}
-                            onChange={event => settings.set({ autoApply: event.target.checked })}
-                        />
-                        <span>Автоматически применять библиотеку при запуске и обновлении</span>
-                    </label>
-                    <label className="uc-checkbox">
-                        <input
-                            type="checkbox"
-                            checked={preferences.pauseOnPreview}
-                            onChange={event => settings.set({ pauseOnPreview: event.target.checked })}
-                        />
-                        <span>Ставить Яндекс Музыку на паузу при прослушивании кандидата</span>
-                    </label>
-                    <label className="uc-checkbox">
-                        <input
-                            type="checkbox"
-                            checked={preferences.autoResume}
-                            onChange={event => settings.set({ autoResume: event.target.checked })}
-                        />
-                        <span>Возобновлять музыку после предпросмотра, если паузу поставил аддон</span>
-                    </label>
+                <div className="uc-eyebrow">Поведение</div>
+                <div className="uc-section-title">Аддон</div>
+                <label className="uc-checkbox uc-checkbox-spaced">
+                    <input
+                        type="checkbox"
+                        checked={preferences.autoApply}
+                        onChange={event => settings.set({ autoApply: event.target.checked })}
+                    />
+                    <span>Применять библиотеку при запуске и обновлении</span>
+                </label>
+                <div className="uc-muted uc-small uc-mt">
+                    Меню трека: «Найти без цензуры» и «stupidCensor: открыть».
                 </div>
-                <div className="uc-hint">Панель открывается из меню трека (три точки) → «stupidCensor: открыть».</div>
             </section>
 
-            <section className="uc-card">
-                <div className="uc-eyebrow">Что должно быть в репозитории</div>
-                <div className="uc-section-title">Файлы облака</div>
-                <ol className="uc-steps">
-                    <li><code>list.json</code> в корне ветки — публичный индекс замен.</li>
-                    <li><code>.github/workflows/uncensor-cloud.yml</code> — поиск и публикация через workflow_dispatch.</li>
-                    <li><code>cloud/uncensor_worker.py</code> и <code>cloud/requirements.txt</code> — обработчик заданий.</li>
-                    <li>Релизы <code>previews</code> и <code>library</code> — предпросмотры и постоянные аудиофайлы.</li>
-                </ol>
-                <div className="uc-hint">
-                    Fine-grained token: Contents — Read and write, Actions — Read and write, Metadata — Read. Для классического
-                    token нужны права <code>repo</code> и <code>workflow</code>.
+            <details className="uc-card uc-details">
+                <summary>Подготовка репозитория</summary>
+                <div className="uc-details-body">
+                    <ol className="uc-steps">
+                        <li><code>list.json</code> в корне ветки.</li>
+                        <li><code>.github/workflows/uncensor-cloud.yml</code>.</li>
+                        <li><code>cloud/uncensor_worker.py</code> и <code>requirements.txt</code>.</li>
+                        <li>Actions: <strong>Read and write permissions</strong>.</li>
+                    </ol>
+                    <div className="uc-hint">
+                        Fine-grained token: Contents — Read and write, Actions — Read and write, Metadata — Read.
+                    </div>
+                    <div className="uc-muted uc-small">
+                        Публикуйте только записи, на которые у вас есть права. Репозиторий и аудиофайлы видны всем.
+                    </div>
                 </div>
-                <a className="uc-link uc-small" href={TOKENS_URL} target="_blank" rel="noreferrer">
-                    Управление классическими токенами
-                </a>
-            </section>
+            </details>
         </div>
     )
 }

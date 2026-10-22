@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { ADDON_AUTHOR, ADDON_NAME, ADDON_VERSION } from '../legacy/constants.ts'
 import { useCurrentTrack } from '../legacy/useCurrentTrack.ts'
 import type { TrackRef } from '../types.ts'
-import { clearNotice, releasePreviewPause } from '../store.ts'
+import { clearNotice } from '../store.ts'
 import { LibraryTab } from './LibraryTab.tsx'
 import { JobsTab } from './JobsTab.tsx'
 import { SettingsTab } from './SettingsTab.tsx'
@@ -28,7 +28,7 @@ const TABS: Array<[Tab, string]> = [
     ['track', 'Трек'],
     ['library', 'Библиотека'],
     ['jobs', 'Задания'],
-    ['setup', 'Мой GitHub'],
+    ['setup', 'GitHub'],
 ]
 
 export function Panel({ controller, initialTrack, initialTab, initialAction }: PanelProps) {
@@ -54,12 +54,6 @@ export function Panel({ controller, initialTrack, initialTab, initialAction }: P
         window.addEventListener('keydown', onKeyDown)
         return () => window.removeEventListener('keydown', onKeyDown)
     }, [controller])
-
-    useEffect(() => {
-        return () => {
-            void releasePreviewPause()
-        }
-    }, [])
 
     useEffect(() => {
         if (!state.notice) return
@@ -142,10 +136,8 @@ export function Panel({ controller, initialTrack, initialTab, initialAction }: P
             </main>
 
             <footer className="uc-footer">
-                <span>{ADDON_AUTHOR} · {ADDON_NAME} {ADDON_VERSION}</span>
-                <span className="uc-muted">
-                    Файлы, токен и настройки остаются в вашем GitHub и локальном хранилище аддона.
-                </span>
+                <span>{ADDON_NAME} {ADDON_VERSION} · {ADDON_AUTHOR}</span>
+                <span className="uc-muted">Токен хранится только в PulseSync.</span>
             </footer>
         </div>
     )

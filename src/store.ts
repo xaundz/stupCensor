@@ -87,7 +87,6 @@ let active = false
 let token = ''
 let polling = false
 let refreshing = false
-let pausedForPreview = false
 const listeners = new Set<() => void>()
 
 export function subscribe(listener: () => void): () => void {
@@ -115,7 +114,7 @@ function requireApi(): AddonApi {
 
 function apiFor(api: AddonApi): GitHubClient {
     const config = state.config
-    if (!config) throw new Error('Сначала укажите GitHub-репозиторий в разделе «Мой GitHub».')
+    if (!config) throw new Error('Сначала укажите GitHub-репозиторий в разделе «GitHub».')
     return new GitHubClient(api, config.repo, token, config.branch)
 }
 
@@ -352,7 +351,7 @@ export async function disconnectGitHub(forgetRepo: boolean): Promise<void> {
 export async function refreshLibrary(options: { silent?: boolean } = {}): Promise<LibraryIndex | null> {
     const api = requireApi()
     if (!state.config) {
-        if (!options.silent) pushNotice('error', 'Сначала настройте репозиторий в разделе «Мой GitHub».')
+        if (!options.silent) pushNotice('error', 'Сначала настройте репозиторий в разделе «GitHub».')
         return null
     }
     if (refreshing) return state.library
@@ -519,7 +518,7 @@ function autoCandidate(job: JobRecord): SourceCandidate | null {
             const warnings = (Array.isArray(candidate.warnings) ? candidate.warnings : []).map(warning => warning.toLowerCase())
             if (warnings.some(warning => AUTO_REJECT_WARNINGS.some(pattern => warning.includes(pattern)))) return false
             if (Math.abs(candidate.durationMs - targetMs) > 5000) return false
-            return Boolean(candidate.previewUrl)
+            return true
         })
         .sort((a, b) => {
             if (b.score !== a.score) return b.score - a.score
@@ -713,12 +712,12 @@ function parseCandidate(raw: unknown): SourceCandidate | null {
     const item = raw as Record<string, unknown>
     const id = sanitizeText(item.id, 120)
     const provider = item.provider === 'youtube' || item.provider === 'soundcloud' ? item.provider : null
-    const previewUrl = sanitizeText(item.previewUrl, 2000)
-    if (!id || !provider || !isStableHttpsUrl(previewUrl)) return null
+    const pageUrl = sanitizeText(item.pageUrl, 2000)
+    if (!id || !provider || !isStableHttpsUrl(pageUrl)) return null
     return {
         id,
         provider,
-        pageUrl: sanitizeText(item.pageUrl, 2000),
+        pageUrl,
         title: sanitizeText(item.title, 400) || 'Без названия',
         artist: sanitizeText(item.artist, 400),
         uploader: sanitizeText(item.uploader, 300),
@@ -727,10 +726,6 @@ function parseCandidate(raw: unknown): SourceCandidate | null {
         warnings: Array.isArray(item.warnings)
             ? item.warnings.map(value => sanitizeText(value, 160)).filter(Boolean).slice(0, 12)
             : [],
-        previewUrl,
-        assetName: sanitizeText(item.assetName, 300),
-        sizeBytes: Math.max(0, Number(item.sizeBytes) || 0),
-        sha256: sanitizeText(item.sha256, 128),
     }
 }
 
@@ -761,14 +756,24 @@ function mergeRemoteJob(job: JobRecord, remote: Record<string, unknown>): JobRec
                   assetName: sanitizeText((publishedRaw as Record<string, unknown>).assetName, 300),
               }
             : job.published
+    const remoteUpdatedAt = sanitizeText(remote.updatedAt, 40)
+    const startedAt =
+        sanitizeText(remote.startedAt, 40) ||
+        job.startedAt ||
+        (status === 'running' && remoteUpdatedAt ? remoteUpdatedAt : undefined)
     return {
         ...job,
-        status,
+        status: job.cancelRequested && (status === 'queued' || status === 'running') ? 'abandoned' : status,
         candidates,
         error,
         published,
         expiresAt: sanitizeText(remote.expiresAt, 40) || job.expiresAt,
         runUrl: sanitizeText(remote.runUrl, 1000) || job.runUrl,
+        startedAt,
+        finishedAt: ['ready', 'published', 'failed', 'updated', 'removed', 'abandoned'].includes(status)
+            ? remoteUpdatedAt || job.finishedAt
+            : job.finishedAt,
+        etaSeconds: Math.max(0, Number(remote.etaSeconds) || job.etaSeconds || 0) || undefined,
         updatedAt: new Date().toISOString(),
     }
 }
@@ -796,7 +801,7 @@ async function handleTerminalJob(job: JobRecord): Promise<void> {
             return
         }
         updateJobLocal(job.id, { processed: true })
-        notifyUser('info', `Кандидаты готовы для «${job.trackTitle}». Откройте задание, чтобы прослушать.`)
+        notifyUser('info', `Кандидаты готовы для «${job.trackTitle}». Откройте задание, чтобы выбрать запись.`)
         pushNotice('success', `Готово: ${job.candidates?.length || 0} кандидатов для «${job.trackTitle}».`)
         return
     }
@@ -859,7 +864,8 @@ async function pollJob(job: JobRecord): Promise<void> {
     if (ageMs > 20_000) {
         const run = await client.getRunForJob(job.id)
         if (run) {
-            const patch: Partial<JobRecord> = { runUrl: run.htmlUrl }
+            const patch: Partial<JobRecord> = { runUrl: run.htmlUrl, runId: run.id }
+            if (run.startedAt && !job.startedAt) patch.startedAt = run.startedAt
             if (run.status === 'completed') {
                 if (run.conclusion === 'success') {
                     patch.status = 'failed'
@@ -939,33 +945,37 @@ export async function resumePendingJobs(): Promise<void> {
     await pollPendingJobs()
 }
 
-export async function pauseForPreview(): Promise<boolean> {
+export async function cancelJob(jobId: string): Promise<void> {
     const api = requireApi()
-    if (!settings.store.pauseOnPreview) return false
-    try {
-        const snapshot = await api.client.getPlayerSnapshot()
-        if (!snapshot.isPlaying) return false
-        await api.client.pause()
-        pausedForPreview = true
-        return true
-    } catch (error) {
-        pushNotice('error', `Не удалось поставить Яндекс Музыку на паузу: ${errorText(error)}`)
-        throw new Error(`Не удалось поставить Яндекс Музыку на паузу: ${errorText(error)}`)
+    const job = state.jobs.find(item => item.id === jobId)
+    if (!job) return
+    if (job.status !== 'queued' && job.status !== 'running') return
+    if (!token) throw new Error('Для отмены задания нужен GitHub-токен.')
+    const client = new GitHubClient(api, job.repo, token, job.branch)
+    let runId = job.runId
+    if (!runId) {
+        const run = await client.getRunForJob(job.id)
+        if (run) {
+            runId = run.id
+            updateJobLocal(job.id, {
+                runId: run.id,
+                runUrl: run.htmlUrl || job.runUrl,
+                startedAt: job.startedAt || run.startedAt,
+            })
+        }
     }
-}
-
-export async function releasePreviewPause(): Promise<void> {
-    if (!pausedForPreview) return
-    pausedForPreview = false
-    if (!settings.store.autoResume) return
-    const api = apiRef
-    if (!api || !active) return
-    try {
-        const snapshot = await api.client.getPlayerSnapshot()
-        if (!snapshot.isPlaying) await api.client.play()
-    } catch {
-        return
+    if (!runId) {
+        throw new Error('GitHub ещё не создал запуск. Подождите несколько секунд и попробуйте снова.')
     }
+    await client.cancelRun(runId)
+    updateJobLocal(job.id, {
+        status: 'abandoned',
+        cancelRequested: true,
+        processed: true,
+        finishedAt: new Date().toISOString(),
+        error: { code: 'cancelled', message: 'Задание отменено.' },
+    })
+    pushNotice('info', 'Задание отменено.')
 }
 
 export async function checkAudioUrl(url: string): Promise<{ ok: boolean; message: string; contentType: string }> {

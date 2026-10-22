@@ -1,4 +1,6 @@
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -138,6 +140,127 @@ class MappingTests(unittest.TestCase):
         existing = {"audioUrl": url, "assetName": "same.m4a", "addedAt": "2024-01-01T00:00:00Z"}
         mapping = worker.build_mapping("123", "T", "A", 1000, url, "same.m4a", {}, existing)
         self.assertNotIn("history", mapping)
+
+
+class SearchMetadataTests(unittest.TestCase):
+    def test_search_returns_metadata_without_downloading(self):
+        class FakeGitHub:
+            def __init__(self):
+                self.writes = []
+
+            def upsert_json(self, path, payload, message):
+                self.writes.append((path, payload, message))
+
+        github = FakeGitHub()
+        metadata = {
+            "TITLE": "Группа крови",
+            "ARTIST": "Кино",
+            "DURATION": "245",
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GITHUB_REF_NAME": "main",
+            "GITHUB_RUN_ID": "123",
+        }
+        entries = [
+            {
+                "provider": "youtube",
+                "pageUrl": "https://www.youtube.com/watch?v=abc123",
+                "title": "Кино - Группа крови",
+                "artist": "Кино",
+                "uploader": "Кино",
+                "duration": 246,
+                "isLive": False,
+            }
+        ]
+        with patch.dict(os.environ, metadata, clear=True), \
+                patch("uncensor_worker.search_entries", side_effect=[entries, []]), \
+                patch("uncensor_worker.validate_public_https") as validate, \
+                patch("uncensor_worker.download_and_transcode") as download:
+            job = worker.JobStatus(github, "search", "job-12345678", "owner/repo", "main")
+            worker.handle_search(github, job)
+
+        self.assertGreaterEqual(validate.call_count, 1)
+        download.assert_not_called()
+        self.assertEqual(len(github.writes), 1)
+        path, payload, _ = github.writes[0]
+        self.assertEqual(path, "jobs/job-12345678.json")
+        self.assertEqual(payload["status"], "ready")
+        self.assertEqual(payload["etaSeconds"], worker.JOB_ETA_SECONDS["search"])
+        candidate = payload["candidates"][0]
+        self.assertEqual(candidate["pageUrl"], "https://www.youtube.com/watch?v=abc123")
+        self.assertNotIn("previewUrl", candidate)
+        self.assertNotIn("previewAsset", candidate)
+
+
+class ConfirmTests(unittest.TestCase):
+    def test_confirm_downloads_selected_candidate_and_publishes(self):
+        class FakeGitHub:
+            def __init__(self):
+                self.writes = []
+                self.index = None
+
+            def upsert_json(self, path, payload, message):
+                self.writes.append((path, payload, message))
+
+            def get_json(self, path):
+                self.assert_path = path
+                return {
+                    "status": "ready",
+                    "trackId": "123456",
+                    "trackDurationMs": 245000,
+                    "candidates": [
+                        {
+                            "id": "abc123def4",
+                            "provider": "youtube",
+                            "pageUrl": "https://www.youtube.com/watch?v=abc123",
+                            "title": "Кино - Группа крови",
+                            "artist": "Кино",
+                            "uploader": "Кино",
+                            "durationMs": 245000,
+                            "score": 0.91,
+                            "warnings": [],
+                        }
+                    ],
+                }
+
+            def ensure_release(self, tag, title):
+                return {"id": 7}
+
+            def upload_asset(self, release, name, path, content_type="audio/mp4"):
+                self.asset_name = name
+                return {"browser_download_url": f"https://github.com/owner/repo/releases/download/library/{name}"}
+
+            def update_index(self, mutator):
+                self.index = {"schema": 1, "tracks": {}}
+                mutator(self.index)
+                return self.index, True
+
+        github = FakeGitHub()
+        env = {
+            "TRACK_ID": "123456",
+            "TITLE": "Группа крови",
+            "ARTIST": "Кино",
+            "DURATION": "245",
+            "SOURCE_JOB_ID": "job-source-12345678",
+            "CANDIDATE_ID": "abc123def4",
+            "GITHUB_REPOSITORY": "owner/repo",
+            "GITHUB_REF_NAME": "main",
+            "GITHUB_RUN_ID": "456",
+        }
+        with tempfile.NamedTemporaryFile(suffix=".m4a") as output, \
+                patch.dict(os.environ, env, clear=True), \
+                patch("uncensor_worker.validate_public_https"), \
+                patch("uncensor_worker.download_and_transcode", return_value=(Path(output.name), 245.0, {})) as download:
+            job = worker.JobStatus(github, "confirm", "job-confirm-12345678", "owner/repo", "main")
+            worker.handle_confirm(github, job)
+
+        download.assert_called_once()
+        self.assertEqual(github.asset_name, "123456-abc123def4.m4a")
+        self.assertIsNotNone(github.index)
+        mapping = github.index["tracks"]["123456"]
+        self.assertEqual(mapping["source"]["pageUrl"], "https://www.youtube.com/watch?v=abc123")
+        self.assertTrue(mapping["audioUrl"].startswith("https://github.com/"))
+        self.assertEqual(github.writes[-1][1]["status"], "published")
+        self.assertEqual(github.writes[-1][1]["candidateId"], "abc123def4")
 
 
 class ValidationTests(unittest.TestCase):

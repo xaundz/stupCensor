@@ -5,15 +5,11 @@ import { SETTINGS_KEY } from './constants.ts'
 export type AddonSettingsState = {
     enabled: boolean
     autoApply: boolean
-    pauseOnPreview: boolean
-    autoResume: boolean
 }
 
 const defaults: AddonSettingsState = {
     enabled: true,
     autoApply: true,
-    pauseOnPreview: true,
-    autoResume: false,
 }
 
 const listeners = new Set<() => void>()
@@ -33,8 +29,6 @@ function load(): AddonSettingsState {
         return {
             enabled: asBoolean(value.enabled, defaults.enabled),
             autoApply: asBoolean(value.autoApply, defaults.autoApply),
-            pauseOnPreview: asBoolean(value.pauseOnPreview, defaults.pauseOnPreview),
-            autoResume: asBoolean(value.autoResume, defaults.autoResume),
         }
     } catch {
         return defaults
