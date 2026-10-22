@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "name": "Uncensor Cloud",
+  "updatedAt": "2026-01-01T00:00:00Z",
+  "tracks": {
+    "12345678": {
+      "trackId": "12345678",
+      "title": "Название трека",
+      "artists": [
+        "Исполнитель"
+      ],
+      "durationMs": 245000,
+      "enabled": true,
+      "audioUrl": "https://github.com/OWNER/REPO/releases/download/library/12345678-example.m4a",
+      "assetName": "12345678-example.m4a",
+      "releaseTag": "library",
+      "source": {
+        "provider": "manual",
+        "pageUrl": "",
+        "title": "Название трека",
+        "artist": "Исполнитель",
+        "uploader": "",
+        "durationMs": 245000,
+        "manual": true
+      },
+      "addedAt": "2026-01-01T00:00:00Z",
+      "updatedAt": "2026-01-01T00:00:00Z"
+    }
+  }
+}

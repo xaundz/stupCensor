@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>stupidCensor — установка и настройка</title>
+<style>
+    :root {
+        --bg: #0f0f13;
+        --panel: #17171d;
+        --card: #1e1e26;
+        --line: rgba(255, 255, 255, .1);
+        --text: #f2f2f5;
+        --muted: #a5a5b1;
+        --accent: #ffdb4d;
+        --accent-ink: #17130a;
+        --ok: #63d18b;
+        --warn: #f1b45a;
+        --error: #ff7b7b;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+        margin: 0;
+        background:
+            radial-gradient(1100px 500px at 8% -8%, rgba(255, 219, 77, .13), transparent 60%),
+            radial-gradient(900px 500px at 100% 0%, rgba(110, 120, 255, .08), transparent 60%),
+            var(--bg);
+        color: var(--text);
+        font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+        color-scheme: dark;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code, pre {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: .92em;
+    }
+    code {
+        background: rgba(255, 255, 255, .07);
+        border-radius: 5px;
+        padding: 1px 5px;
+        overflow-wrap: anywhere;
+    }
+    pre {
+        background: #0b0b0f;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 14px;
+        overflow: auto;
+        line-height: 1.5;
+    }
+    pre code { background: none; padding: 0; }
+    .wrap { width: min(1040px, calc(100% - 32px)); margin: 0 auto; padding: 34px 0 70px; }
+    .hero {
+        display: flex;
+        gap: 18px;
+        align-items: center;
+        padding: 24px;
+        border: 1px solid var(--line);
+        border-radius: 24px;
+        background: linear-gradient(150deg, rgba(255, 219, 77, .12), rgba(255, 255, 255, .02) 55%);
+    }
+    .mark {
+        display: grid;
+        place-items: center;
+        width: 76px;
+        height: 76px;
+        flex: 0 0 76px;
+        border-radius: 22px;
+        background: linear-gradient(145deg, #ffdb4d, #f0a51d);
+        color: var(--accent-ink);
+        font-weight: 900;
+        letter-spacing: .04em;
+        font-size: 24px;
+        box-shadow: 0 14px 40px rgba(255, 219, 77, .16);
+    }
+    h1 { margin: 0; font-size: clamp(25px, 4vw, 38px); line-height: 1.12; letter-spacing: -.02em; }
+    .hero p { margin: 7px 0 0; color: var(--muted); max-width: 700px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+    .chip {
+        font-size: 11px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 4px 9px;
+        color: var(--muted);
+        background: rgba(0, 0, 0, .14);
+    }
+    .toc {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 8px;
+        margin: 18px 0 26px;
+    }
+    .toc a {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--panel);
+        padding: 11px 13px;
+        color: var(--text);
+        font-size: 13px;
+    }
+    .toc a span { color: var(--accent); font-weight: 700; margin-right: 7px; }
+    section { margin-top: 28px; }
+    h2 { font-size: 21px; margin: 0 0 10px; letter-spacing: -.01em; }
+    h3 { font-size: 15px; margin: 18px 0 7px; }
+    p { margin: 8px 0; }
+    ul, ol { margin: 8px 0; padding-left: 22px; }
+    li { margin: 5px 0; }
+    .muted { color: var(--muted); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+    .card {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--card);
+        padding: 16px;
+    }
+    .card h3 { margin-top: 0; }
+    .callout {
+        border: 1px solid var(--line);
+        border-left: 3px solid var(--accent);
+        border-radius: 0 12px 12px 0;
+        background: rgba(255, 219, 77, .055);
+        padding: 12px 14px;
+        margin: 12px 0;
+    }
+    .callout.warn { border-left-color: var(--warn); background: rgba(241, 180, 90, .055); }
+    .callout.error { border-left-color: var(--error); background: rgba(255, 123, 123, .055); }
+    .callout.ok { border-left-color: var(--ok); background: rgba(99, 209, 139, .055); }
+    .callout strong { display: block; margin-bottom: 3px; }
+    .steps { counter-reset: step; list-style: none; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+    .steps > li {
+        counter-increment: step;
+        border: 1px solid var(--line);
+        background: var(--panel);
+        border-radius: 14px;
+        padding: 14px 16px 14px 56px;
+        position: relative;
+    }
+    .steps > li::before {
+        content: counter(step);
+        position: absolute;
+        left: 15px;
+        top: 13px;
+        width: 27px;
+        height: 27px;
+        border-radius: 50%;
+        background: var(--accent);
+        color: var(--accent-ink);
+        display: grid;
+        place-items: center;
+        font-weight: 800;
+        font-size: 13px;
+    }
+    .steps > li strong { display: block; margin-bottom: 4px; }
+    table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 13px; }
+    th, td { text-align: left; border-bottom: 1px solid var(--line); padding: 8px 9px; vertical-align: top; }
+    th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+    details {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--panel);
+        padding: 11px 13px;
+        margin: 8px 0;
+    }
+    summary { cursor: pointer; font-weight: 650; }
+    details p, details ul { color: var(--muted); }
+    .tag {
+        display: inline-block;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: .05em;
+        text-transform: uppercase;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 2px 6px;
+        color: var(--muted);
+        vertical-align: middle;
+    }
+    .footer {
+        margin-top: 38px;
+        padding-top: 18px;
+        border-top: 1px solid var(--line);
+        color: var(--muted);
+        font-size: 12px;
+        display: flex;
+        justify-content: space-between;
+        gap: 20px;
+        flex-wrap: wrap;
+    }
+    @media (max-width: 620px) {
+        .wrap { width: min(100% - 20px, 1040px); padding-top: 18px; }
+        .hero { padding: 17px; gap: 12px; border-radius: 18px; }
+        .mark { width: 56px; height: 56px; flex-basis: 56px; border-radius: 16px; font-size: 18px; }
+        .steps > li { padding-left: 48px; }
+        .steps > li::before { left: 12px; }
+    }
+</style>
+</head>
+<body>
+<div class="wrap">
+    <header class="hero">
+        <div class="mark">SC</div>
+        <div>
+            <h1>stupidCensor</h1>
+            <p>Установка stupidCensor и настройка облачной библиотеки замен для Яндекс Музыки.</p>
+            <div class="chips">
+                <span class="chip">PulseSync web-addon</span>
+                <span class="chip">версия 1.1.0</span>
+                <span class="chip">Кирилл (Xaund)</span>
+                <span class="chip">GitHub Releases + Actions</span>
+            </div>
+        </div>
+    </header>
+
+    <nav class="toc" aria-label="Содержание">
+        <a href="#short"><span>01</span>Коротко</a>
+        <a href="#requirements"><span>02</span>Требования</a>
+        <a href="#repo"><span>03</span>Репозиторий</a>
+        <a href="#token"><span>04</span>Токен</a>
+        <a href="#install"><span>05</span>Установка</a>
+        <a href="#connect"><span>06</span>Подключение</a>
+        <a href="#usage"><span>07</span>Использование</a>
+        <a href="#data"><span>08</span>Данные</a>
+        <a href="#problems"><span>09</span>Проблемы</a>
+        <a href="#limits"><span>10</span>Ограничения</a>
+    </nav>
+
+    <section id="short">
+        <h2>Коротко</h2>
+        <p>Аддон добавляет в меню трека (три точки) пункты <strong>«Найти без цензуры»</strong> и <strong>«stupidCensor: открыть»</strong>, а также помечает заменённые треки значком <strong>SC</strong>. Он не хранит музыку на стороннем сервере: поиск и публикация выполняются в <strong>вашем публичном GitHub-репозитории</strong> через GitHub Actions, а готовая запись попадает в Releases.</p>
+        <div class="grid">
+            <div class="card">
+                <h3>Что делает аддон</h3>
+                <ul>
+                    <li>Ищет альтернативные записи на YouTube и SoundCloud.</li>
+                    <li>Даёт прослушать до пяти кандидатов.</li>
+                    <li>Публикует выбранный файл в ваш GitHub Releases.</li>
+                    <li>Записывает замену в <code>list.json</code>.</li>
+                    <li>Автоматически регистрирует подмену по ID трека.</li>
+                </ul>
+            </div>
+            <div class="card">
+                <h3>Что нужно понимать</h3>
+                <ul>
+                    <li>Нужен публичный репозиторий и GitHub-токен.</li>
+                    <li>Автопроверка не определяет цензуру: слушайте вручную.</li>
+                    <li>YouTube/SoundCloud могут блокировать IP GitHub Actions.</li>
+                    <li>Публикуя аудио, вы отвечаете за авторские права.</li>
+                    <li>Приватный репозиторий не подойдёт.</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
+    <section id="requirements">
+        <h2>Требования</h2>
+        <table>
+            <tr><th>Компонент</th><th>Требование</th></tr>
+            <tr><td>PulseSync</td><td>Сборка с поддержкой WebHost-аддонов (host API 1, возможности из <code>metadata.json</code>). В старом клиенте без WebHost аддон не загрузится.</td></tr>
+            <tr><td>GitHub</td><td>Публичный репозиторий. Actions включены. Ветка по умолчанию содержит workflow.</td></tr>
+            <tr><td>Токен</td><td>Fine-grained: Contents RW, Actions RW, Metadata R. Классический: <code>repo</code> + <code>workflow</code>.</td></tr>
+            <tr><td>Файлы</td><td><code>list.json</code>, <code>.github/workflows/uncensor-cloud.yml</code>, <code>cloud/uncensor_worker.py</code>, <code>cloud/requirements.txt</code>.</td></tr>
+            <tr><td>Сеть</td><td>Доступ к <code>api.github.com</code>, <code>github.com</code>, <code>raw.githubusercontent.com</code>, release-assets. GitHub Actions должен достучаться до источников и ffmpeg.</td></tr>
+        </table>
+        <div class="callout warn">
+            <strong>Проверьте поддержку WebHost</strong>
+            Аддон собран через <code>@pulsesync/addon-sdk</code> 0.16.0 и требует возможности <code>lifecycle-v1</code>, <code>async-start-v1</code>, <code>net-per-addon-v1</code>, <code>resource-read-v1</code>, <code>typed-settings-v1</code>, <code>scoped-css-v1</code>. Если пункты меню не появились, сначала обновите PulseSync.
+        </div>
+    </section>
+
+    <section id="repo">
+        <h2>Шаг 1. Публичный репозиторий</h2>
+        <ol class="steps">
+            <li>
+                <strong>Создайте репозиторий</strong>
+                Откройте <a href="https://github.com/new" target="_blank" rel="noreferrer">github.com/new</a>. Выберите <strong>Public</strong>, имя на ваш вкус, например <code>uncensor-cloud</code>. Приватный репозиторий не подходит: Яндекс Музыке нужны прямые публичные ссылки на аудио.
+            </li>
+            <li>
+                <strong>Скопируйте облачные файлы</strong>
+                В корень репозитория положите:
+                <pre><code>list.json
+.github/workflows/uncensor-cloud.yml
+cloud/uncensor_worker.py
+cloud/requirements.txt</code></pre>
+                Их можно загрузить через веб-интерфейс GitHub (<strong>Add file → Upload files</strong>) или через git:
+                <pre><code>git init
+git remote add origin https://github.com/ВАШ_ЛОГИН/uncensor-cloud.git
+git add .
+git commit -m "stupidCensor cloud files"
+git push -u origin main</code></pre>
+                Для пустого индекса используйте:
+                <pre><code>{
+  "schema": 1,
+  "name": "Uncensor Cloud",
+  "tracks": {}
+}</code></pre>
+            </li>
+            <li>
+                <strong>Включите Actions</strong>
+                Откройте вкладку <strong>Actions</strong>, разрешите workflows. Убедитесь, что в списке есть <strong>Uncensor Cloud</strong> и он активен. Если workflow виден, но выключен, включите его.
+            </li>
+            <li>
+                <strong>Проверьте ветку</strong>
+                Workflow должен лежать в ветке по умолчанию (<code>main</code>), иначе GitHub не покажет его в списке. Аддон запускает workflow в ветке по умолчанию.
+            </li>
+        </ol>
+        <div class="callout">
+            <strong>Почему нужен публичный репозиторий</strong>
+            Аудио воспроизводится по ссылке GitHub Releases. Если репозиторий приватный, ссылка потребует авторизацию и плеер не сможет открыть файл.
+        </div>
+    </section>
+
+    <section id="token">
+        <h2>Шаг 2. GitHub-токен</h2>
+        <h3>Вариант A: fine-grained token</h3>
+        <ol>
+            <li>Откройте <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">создание fine-grained token</a>.</li>
+            <li><strong>Resource owner</strong> — ваш аккаунт или организация-владелец репозитория.</li>
+            <li><strong>Repository access</strong> — <em>Only select repositories</em> → нужный репозиторий.</li>
+            <li><strong>Permissions</strong>: <code>Contents: Read and write</code>, <code>Actions: Read and write</code>, <code>Metadata: Read</code> (Metadata обычно включён обязательно).</li>
+            <li>Срок действия — на ваше усмотрение. Скопируйте токен: он показывается один раз.</li>
+        </ol>
+        <h3>Вариант B: классический token</h3>
+        <p>Создайте token на <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer">github.com/settings/tokens</a> и отметьте:</p>
+        <ul>
+            <li><code>repo</code> — доступ к Contents и приватным данным (даже для публичного репозитория);</li>
+            <li><code>workflow</code> — запуск GitHub Actions.</li>
+        </ul>
+        <div class="callout error">
+            <strong>Не публикуйте токен</strong>
+            Токен хранится только в локальном хранилище аддона, если включена галочка «Хранить токен». Он не должен попадать в <code>list.json</code>, <code>jobs</code>, workflow inputs, README, скриншоты или архив. При утечке отзовите его в настройках GitHub.
+        </div>
+    </section>
+
+    <section id="install">
+        <h2>Шаг 3. Установка аддона</h2>
+        <ol class="steps">
+            <li>
+                <strong>Установите папку аддона</strong>
+                В архиве возьмите папку <code>stupid-censor</code> и скопируйте её в каталог аддонов PulseSync. Альтернатива: установите ZIP через интерфейс клиента, если ваша версия это поддерживает.
+            </li>
+            <li>
+                <strong>Перезапустите PulseSync</strong>
+                После установки откройте Яндекс Музыку внутри PulseSync. В меню трека (три точки) появятся <strong>«Найти без цензуры»</strong> и <strong>«stupidCensor: открыть»</strong>.
+            </li>
+            <li>
+                <strong>Проверьте настройки</strong>
+                В настройках аддона можно отключить меню stupidCensor, автоприменение библиотеки, паузу Яндекс Музыки при предпросмотре и авто-возобновление. По умолчанию автовозобновление выключено.
+            </li>
+        </ol>
+        <div class="callout warn">
+            <strong>Кнопки нет</strong>
+            Проверьте: аддон включён, версия PulseSync поддерживает WebHost-аддоны, в metadata указан правильный <code>directoryName</code>. Старые сборки PulseSync без WebHost не смогут загрузить этот аддон.
+        </div>
+    </section>
+
+    <section id="connect">
+        <h2>Шаг 4. Подключение «Мой GitHub»</h2>
+        <ol class="steps">
+            <li>
+                <strong>Откройте раздел</strong>
+                Откройте меню трека (три точки) → <strong>«stupidCensor: открыть»</strong>, затем перейдите на вкладку <strong>«Мой GitHub»</strong>.
+            </li>
+            <li>
+                <strong>Укажите репозиторий</strong>
+                Формат: <code>владелец/репозиторий</code> или полная ссылка <code>https://github.com/владелец/репозиторий</code>.
+            </li>
+            <li>
+                <strong>Вставьте токен</strong>
+                Токен нужен для запуска workflow и чтения служебных файлов. Если снять «Хранить токен», после перезапуска останется режим чтения: библиотека и предпросмотры работают, новые задания не запускаются.
+            </li>
+            <li>
+                <strong>Нажмите «Подключить»</strong>
+                Аддон проверит, что репозиторий публичный, workflow существует и активен. При успехе появится сообщение с именем репозитория и веткой.
+            </li>
+        </ol>
+        <table>
+            <tr><th>Ошибка</th><th>Что сделать</th></tr>
+            <tr><td>Репозиторий приватный</td><td>Создайте публичный репозиторий: аудио должно открываться без входа.</td></tr>
+            <tr><td>Workflow не найден</td><td>Скопируйте <code>.github/workflows/uncensor-cloud.yml</code> в корень ветки по умолчанию.</td></tr>
+            <tr><td>Workflow не активен</td><td>Включите Actions и сам workflow во вкладке Actions.</td></tr>
+            <tr><td>GitHub отклонил токен</td><td>Проверьте срок действия и права Contents/Actions. Для классического — <code>repo</code> и <code>workflow</code>.</td></tr>
+        </table>
+    </section>
+
+    <section id="usage">
+        <h2>Шаг 5. Как пользоваться</h2>
+        <div class="grid">
+            <div class="card">
+                <h3>Поиск</h3>
+                <ol>
+                    <li>Откройте меню трека → <strong>«Найти без цензуры»</strong>. Уверенное совпадение сохранится автоматически, иначе откроется панель для подтверждения.</li>
+                    <li>Проверьте исполнителя, название и длительность.</li>
+                    <li>При необходимости вставьте конкретную страницу YouTube/SoundCloud.</li>
+                    <li>Нажмите <strong>«Искать в облаке»</strong>.</li>
+                    <li>Дождитесь статуса «Кандидаты»: задание продолжится, даже если закрыть панель.</li>
+                </ol>
+            </div>
+            <div class="card">
+                <h3>Прослушивание и публикация</h3>
+                <ol>
+                    <li>Нажмите ▶ у кандидата. Яндекс Музыка встанет на паузу, если это включено.</li>
+                    <li>Прослушайте запись целиком или ключевой фрагмент.</li>
+                    <li>Убедитесь, что это не кавер, не ремикс и не цензурированная копия.</li>
+                    <li>Нажмите <strong>«Подменить и сохранить»</strong>.</li>
+                    <li>Дождитесь статуса «Опубликовано». Аддон обновит библиотеку и применит замену.</li>
+                </ol>
+            </div>
+        </div>
+        <h3>Ручное добавление</h3>
+        <p>Вкладка «Своя ссылка на аудио» принимает <strong>прямую HTTPS-ссылку на файл</strong> (m4a, mp3, aac, ogg, opus, flac, wav). Страница YouTube/SoundCloud не подойдёт. Ссылка должна быть постоянной: без <code>X-Amz-Signature</code>, <code>token</code>, <code>expires</code> и других временных параметров. Сначала прослушайте файл, затем публикуйте.</p>
+        <h3>Библиотека и задания</h3>
+        <ul>
+            <li><strong>Библиотека</strong> — все записи из <code>list.json</code>; можно включить, выключить, открыть трек или скрыть связь.</li>
+            <li><strong>Задания</strong> — статусы поиска, публикации, переключения и удаления. Ссылка Actions ведёт в журнал.</li>
+            <li><strong>Удалить</strong> скрывает связь в индексе. Аудиофайл в Releases остаётся доступным.</li>
+            <li>Текущий трек можно перезапустить, если подмена не слышна сразу.</li>
+        </ul>
+        <div class="callout ok">
+            <strong>Проверка результата</strong>
+            После публикации откройте текущий трек заново. Если он играл, аддон попробует перезагрузить плеер; иначе перезапустите трек вручную.
+        </div>
+    </section>
+
+    <section id="data">
+        <h2>Как устроены данные</h2>
+        <table>
+            <tr><th>Объект</th><th>Назначение</th><th>Публичность</th></tr>
+            <tr><td><code>list.json</code></td><td>Индекс замен: ID трека, ссылка, источник, история.</td><td>Публичный</td></tr>
+            <tr><td><code>jobs/&lt;job_id&gt;.json</code></td><td>Статус задания, кандидаты, ошибка, ссылка на Actions.</td><td>Публичный</td></tr>
+            <tr><td>Релиз <code>previews</code></td><td>Временные аудиофайлы для прослушивания.</td><td>Публичный</td></tr>
+            <tr><td>Релиз <code>library</code></td><td>Постоянные файлы, на которые ссылается индекс.</td><td>Публичный</td></tr>
+            <tr><td>Токен</td><td>Локальное хранилище аддона.</td><td>Не публикуется</td></tr>
+        </table>
+        <h3>Пример записи индекса</h3>
+        <pre><code>{
+  "schema": 1,
+  "name": "Uncensor Cloud",
+  "updatedAt": "2026-01-01T00:00:00Z",
+  "tracks": {
+    "12345678": {
+      "trackId": "12345678",
+      "title": "Название",
+      "artists": ["Исполнитель"],
+      "durationMs": 245000,
+      "enabled": true,
+      "audioUrl": "https://github.com/OWNER/REPO/releases/download/library/12345678-cand-abc123.m4a",
+      "assetName": "12345678-cand-abc123.m4a",
+      "releaseTag": "library",
+      "source": {
+        "provider": "youtube",
+        "pageUrl": "https://www.youtube.com/watch?v=...",
+        "title": "Название",
+        "artist": "Исполнитель",
+        "uploader": "Канал",
+        "durationMs": 245000,
+        "score": 0.91
+      },
+      "addedAt": "2026-01-01T00:00:00Z",
+      "updatedAt": "2026-01-01T00:00:00Z"
+    }
+  }
+}</code></pre>
+        <p class="muted">Полный пример: <code>list.example.json</code>. Не копируйте вымышленные URL в рабочий индекс.</p>
+    </section>
+
+    <section id="problems">
+        <h2>Если что-то не работает</h2>
+        <details>
+            <summary>Кандидаты не найдены</summary>
+            <p>Измените название/исполнителя, уберите лишние слова, укажите длительность или конкретную страницу YouTube/SoundCloud. Проверьте журнал Actions: возможно, источник ответил 403 или потребовал вход. IP GitHub Actions часто блокируется YouTube.</p>
+        </details>
+        <details>
+            <summary>Задание зависло в очереди</summary>
+            <p>Откройте вкладку Actions в репозитории. Workflow может ждать свободный runner или не запускаться из-за отключённых Actions. Аддон через ~20 секунд попробует найти запуск, а через 2 минуты без запуска покажет ошибку. Через 45 минут задание считается истёкшим.</p>
+        </details>
+        <details>
+            <summary>Ошибка 403 или «исчерпан лимит»</summary>
+            <p>Проверьте права токена: Contents Read and write, Actions Read and write. Для классического token — <code>repo</code> и <code>workflow</code>. Лимит GitHub API сбрасывается через час; подождите или используйте другой токен.</p>
+        </details>
+        <details>
+            <summary>Предпросмотр не запускается</summary>
+            <p>Проверьте ссылку в браузере. Некоторые хосты запрещают hotlink, отдают HTML вместо аудио или блокируются политикой WebHost. Для ручного добавления надёжнее файл из GitHub Releases. Ошибка «формат не поддерживается» означает, что браузер не смог декодировать поток.</p>
+        </details>
+        <details>
+            <summary>Подмена не слышна</summary>
+            <p>Перезапустите текущий трек. Убедитесь, что связь включена в «Библиотеке» и файл доступен по ссылке. Иногда плееру нужен полный reload. Нажмите «Проверить файл» в карточке трека.</p>
+        </details>
+        <details>
+            <summary>list.json не найден</summary>
+            <p>Добавьте файл в корень ветки по умолчанию или дайте worker создать его первой публикацией. После добавления нажмите «Обновить» в библиотеке.</p>
+        </details>
+        <details>
+            <summary>Репозиторий отклонён</summary>
+            <p>Он приватный, workflow отсутствует/выключен или токен не имеет прав. Проверьте раздел «Состояние подключения» и журнал Actions. Приватные репозитории не поддерживаются намеренно.</p>
+        </details>
+        <details>
+            <summary>Превью-файлы занимают место</summary>
+            <p>Релиз <code>previews</code> накапливает assets. Удаляйте старые вручную на странице Releases. Индекс и библиотека продолжат работать; старые задания могут потерять возможность подтверждения.</p>
+        </details>
+    </section>
+
+    <section id="limits">
+        <h2>Ограничения и честность</h2>
+        <div class="callout warn">
+            <strong>Автоматическая проверка не ищет цензуру</strong>
+            Аддон сравнивает название, исполнителя и длительность. Он не анализирует текст, не находит вырезанные фрагменты и не гарантирует, что запись не является кавером, ремиксом или другой версией. Финальное решение — за пользователем.
+        </div>
+        <ul>
+            <li>Источники YouTube/SoundCloud могут быть недоступны с IP GitHub Actions или требовать cookies/вход. Это внешнее ограничение, а не ошибка аддона.</li>
+            <li>Аудио перекодируется в M4A/AAC 160 kbps; исходное качество и потери зависят от источника.</li>
+            <li>GitHub Releases и Actions имеют лимиты аккаунта. Большие библиотеки требуют места.</li>
+            <li>Публичный репозиторий означает публичные ссылки и имена файлов. Не добавляйте токены и личные данные в публичные файлы.</li>
+            <li>Аддон не обходит DRM, авторизацию, платный доступ или технические ограничения сервисов.</li>
+            <li>Ответственность за загруженные аудиофайлы и соблюдение авторских прав несёт владелец репозитория.</li>
+            <li>Токен в локальном хранилище аддона может быть доступен другим процессам с доступом к профилю PulseSync. Используйте отдельный токен с минимальными правами и сроком действия.</li>
+        </ul>
+    </section>
+
+    <div class="footer">
+        <span>stupidCensor 1.1.0 · Кирилл (Xaund)</span>
+        <span>PulseSync Addon Development License 1.1 · <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">токен</a> · <a href="https://github.com/new" target="_blank" rel="noreferrer">репозиторий</a></span>
+    </div>
+</div>
+</body>
+</html>

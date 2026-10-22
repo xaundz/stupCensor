@@ -1,0 +1,299 @@
+PulseSync Addon Development License 1.1
+
+Version 1.1 - 21 August 2026
+
+Copyright © 2026 Матвиенко Артём Евгеньевич.
+All rights reserved except as expressly granted by this License.
+
+This License applies only to materials expressly distributed under it. Third-party materials remain subject to their respective licenses.
+
+1. LEGAL NATURE AND ACCEPTANCE
+
+1.1. For purposes of this License, the “Licensor” means Матвиенко Артём Евгеньевич to the extent that he holds the exclusive rights in the applicable PulseSync Materials, except where another rightsholder is expressly identified.
+
+1.2. “PulseSync” means the PulseSync software project and software platform operated under the PulseSync designation.
+
+1.3. This License is intended to constitute an open license (открытая лицензия) within the meaning of Article 1286.1 of the Civil Code of the Russian Federation and grants a simple (non-exclusive), royalty-free license only within the limits expressly stated herein.
+
+1.4. The terms of this License are addressed to an indefinite number of persons and are made available for review before use of the PulseSync Materials.
+
+1.5. You accept this License by exercising any right in the PulseSync Materials or Derived PulseSync Materials that, in the absence of this License or another applicable authorization, would require the consent of the rightsholder, including reproduction, modification, adaptation, preparation of a derivative work, incorporation into other software, or distribution.
+
+1.6. Merely viewing, reading, or evaluating publicly accessible materials does not by itself constitute acceptance where such activity does not require authorization from the rightsholder.
+
+1.7. All permissions granted under this License are subject to, and expressly conditioned upon, compliance with all applicable terms of this License, including the purpose, development-product, multi-platform, service-use, redistribution, and notice restrictions.
+
+2. DEFINITIONS
+
+2.1. “PulseSync Materials” means source code, scripts, configuration files, build tooling, templates, examples, documentation, assets, and other copyrightable materials that:
+(a) are contained in a repository, package, SDK, template, release, or other distribution to which this License is attached;
+(b) are provided by the Licensor or otherwise lawfully distributed by the Licensor under this License; and
+(c) are not expressly identified as third-party materials governed by another license.
+
+2.2. “Derived PulseSync Materials” means copyrightable portions of any modification, adaptation, translation, port, refactoring, transformation, derivative work, or other material that is based on PulseSync Materials and retains, reproduces, adapts, or incorporates protected expression from the PulseSync Materials.
+
+2.3. A change of programming language, file structure, identifier names, formatting, module boundaries, build system, packaging, minification, bundling, transpilation, code generation, automated transformation, or AI-assisted transformation does not by itself prevent material from being Derived PulseSync Materials where protected expression from the PulseSync Materials remains incorporated or adapted.
+
+2.4. “Developer Code” means original copyrightable code and materials independently created by You that do not reproduce, adapt, translate, or otherwise incorporate protected expression from the PulseSync Materials.
+
+2.5. “PulseSync Addon” means software that:
+(a) is designed to operate in, through, or in direct connection with PulseSync using an addon, plugin, extension, integration, SDK, API, or other mechanism intended for PulseSync;
+(b) provides PulseSync-specific functionality directly to users of PulseSync or directly supports that functionality; and
+(c) uses the PulseSync Materials or Derived PulseSync Materials only to the extent reasonably necessary for that PulseSync-specific functionality.
+
+2.6. For purposes of this License, software is not considered a PulseSync Addon merely because it is technically compatible with PulseSync, can communicate with PulseSync, contains a nominal, incidental, dormant, or technically unnecessary PulseSync integration, imports PulseSync interfaces, or presents itself as a PulseSync addon while its relevant use of the PulseSync Materials serves an otherwise unrelated product.
+
+2.7. “PulseSync Integration Layer” means the logically identifiable portion of multi-platform software whose specific function is to implement integration with PulseSync and which can reasonably be distinguished from the software’s shared core and integrations with other platforms.
+
+2.8. “Development Product” means a reusable SDK, framework, library, addon template, starter template, starter kit, boilerplate, toolkit, code generator, scaffolding system, reusable development platform, or substantially similar product whose primary purpose is to facilitate development of other software rather than to provide end-user addon functionality.
+
+2.9. “Authorized Purpose” means the development, testing, building, maintenance, operation, distribution, licensing, and commercial exploitation of PulseSync Addons in accordance with this License.
+
+2.10. “You” means the individual or legal entity exercising rights granted by this License.
+
+3. LICENSE GRANT
+
+3.1. Subject to full compliance with this License, the Licensor grants You a worldwide, simple (non-exclusive), royalty-free right to use the PulseSync Materials and Derived PulseSync Materials solely for the Authorized Purpose and for the term stated in Section 15.
+
+3.2. Within the Authorized Purpose, You may:
+(a) reproduce the PulseSync Materials;
+(b) modify, adapt, translate, refactor, process, and otherwise alter the PulseSync Materials;
+(c) create Derived PulseSync Materials;
+(d) compile, bundle, package, and build the PulseSync Materials and Derived PulseSync Materials;
+(e) incorporate the PulseSync Materials and Derived PulseSync Materials into a PulseSync Addon;
+(f) distribute such an addon in source, object, compiled, bundled, or packaged form;
+(g) make such an addon available through repositories, addon catalogs, marketplaces, websites, or direct distribution;
+(h) use the PulseSync Materials internally for development and testing of such an addon; and
+(i) charge fees for, sell, license, or otherwise commercially exploit such an addon.
+
+3.3. A PulseSync Addon may be free, commercial, open-source, source-available, closed-source, or proprietary.
+
+3.4. This License does not require disclosure of the source code of Developer Code.
+
+3.5. No royalty or license fee is payable solely by reason of exercising rights expressly granted under this Section.
+
+3.6. No right is granted except as expressly stated in this License or required by mandatory applicable law.
+
+4. PURPOSE RESTRICTION AND UNRELATED SOFTWARE
+
+4.1. PulseSync Materials and Derived PulseSync Materials may be used only for the Authorized Purpose.
+
+4.2. You may not use, reproduce, modify, adapt, incorporate, deploy, distribute, sublicense, make available, or otherwise exploit PulseSync Materials or Derived PulseSync Materials as part of software whose relevant use of those materials is not reasonably necessary to provide or support functionality of a PulseSync Addon.
+
+4.3. Without the Licensor’s prior written permission, PulseSync Materials and Derived PulseSync Materials may not be used in or for an unrelated application, desktop client, mobile client, web application, software platform, plugin system, addon system, library, framework, SDK, template, toolkit, service, or other software product except to the limited extent expressly permitted for multi-platform software under Section 6.
+
+4.4. The addition of nominal, incidental, token, dormant, or technically unnecessary PulseSync compatibility does not convert unrelated software into a PulseSync Addon.
+
+5. DEVELOPMENT PRODUCTS
+
+5.1. The right to create and distribute PulseSync Addons does not include the right to redistribute PulseSync Materials or Derived PulseSync Materials as a standalone or competing Development Product.
+
+5.2. Without the Licensor’s prior written permission, You may not publish, distribute, sell, license, or make available PulseSync Materials or Derived PulseSync Materials as an alternative or competing SDK, framework, library, addon template, starter template, starter kit, boilerplate, toolkit, code generator, scaffolding system, reusable development platform, or substantially similar Development Product, even if that Development Product is intended exclusively for development for PulseSync.
+
+5.3. You may modify PulseSync Materials for Your own internal development workflow and may maintain private development tooling, provided that such tooling is not distributed as a Development Product.
+
+5.4. You may publish the source code of a specific PulseSync Addon even where it was initially created from a PulseSync template, provided that the repository or distribution is presented and maintained as that specific addon rather than as a reusable Development Product.
+
+6. MULTI-PLATFORM SOFTWARE
+
+6.1. Developer Code may be designed for, shared with, or reused across PulseSync and other platforms.
+
+6.2. In multi-platform software, PulseSync Materials and Derived PulseSync Materials may be included only within the PulseSync Integration Layer and only to the extent reasonably necessary to implement or support PulseSync-specific functionality.
+
+6.3. PulseSync Materials and Derived PulseSync Materials may not be moved into, incorporated into, or used as the basis of a shared core, generic abstraction layer, common framework, common SDK, or integration layer for another platform.
+
+6.4. Code that is independently created as Developer Code may remain in a shared core and may be licensed or reused by You without restriction under this License.
+
+6.5. If PulseSync-specific code and shared code are technically bundled together, the absence of separate physical files does not remove the requirements of this Section. The relevant PulseSync-derived portions must remain logically attributable solely to PulseSync-specific functionality.
+
+7. HOSTED SERVICES, BACKENDS, AND NETWORK USE
+
+7.1. You may operate a backend, hosted component, or network service containing PulseSync Materials or Derived PulseSync Materials only where that component is reasonably necessary to provide or support functionality of one or more PulseSync Addons.
+
+7.2. PulseSync Materials and Derived PulseSync Materials may not be used to create or operate a general-purpose, standalone, or unrelated SaaS product, hosted API, cloud platform, backend service, developer service, or network service.
+
+7.3. You may not expose PulseSync Materials or Derived PulseSync Materials through an API, hosted execution environment, code-generation service, remote development service, or equivalent mechanism in a manner that permits third parties to use their protected expression for purposes outside the Authorized Purpose.
+
+7.4. Merely keeping PulseSync Materials on servers rather than distributing copies does not expand the permissions granted under this License.
+
+8. OWNERSHIP AND DEVELOPER CODE
+
+8.1. The Licensor retains the exclusive rights and other intellectual-property rights held by the Licensor in the PulseSync Materials.
+
+8.2. Modification of PulseSync Materials does not transfer ownership of the original PulseSync Materials to You.
+
+8.3. Subject to the Licensor’s rights in PulseSync Materials and Derived PulseSync Materials, You retain the rights You otherwise hold in Developer Code and in independently created original contributions.
+
+8.4. The use, distribution, or commercial exploitation of a PulseSync Addon does not by itself transfer to the Licensor ownership of Your Developer Code.
+
+8.5. You may apply any license or contractual terms to Developer Code, provided that such terms do not purport to grant rights in PulseSync Materials or Derived PulseSync Materials beyond this License.
+
+9. INDEPENDENT DEVELOPMENT AND UNPROTECTED ELEMENTS
+
+9.1. This License does not prohibit independently developed software that performs similar or equivalent functions where such software is created without reproduction, adaptation, translation, or other use of protected expression from PulseSync Materials.
+
+9.2. Nothing in this License claims exclusive rights in ideas, concepts, principles, methods, processes, systems, ways of solving technical or organizational problems, facts, programming languages, or other elements that are not protected by applicable copyright law.
+
+9.3. Similarity of functionality, behavior, protocol, interface concept, or result does not by itself establish that software contains PulseSync Materials or Derived PulseSync Materials.
+
+9.4. This Section does not limit any rights that may separately exist under patent, trademark, trade-secret, unfair-competition, contractual, or other applicable law.
+
+10. DISTRIBUTION AND NOTICES
+
+10.1. If You distribute PulseSync Materials or Derived PulseSync Materials in source-code form, You must retain:
+(a) the applicable copyright notice; and
+(b) a complete copy of this License or a clear reference to the location where the complete License can be obtained.
+
+10.2. If You distribute a compiled, bundled, or packaged PulseSync Addon containing PulseSync Materials or Derived PulseSync Materials, You must include a reasonably accessible notice substantially identifying that portions of the addon use materials licensed under the PulseSync Addon Development License 1.1.
+
+10.3. The notice required under Section 10.2 may be placed in a LICENSE, NOTICE, THIRD-PARTY-NOTICES, documentation, package metadata, an “About” section, or another location reasonably accessible to recipients.
+
+10.4. The notice requirement does not imply that Developer Code is owned by the Licensor or licensed under this License.
+
+10.5. You are not required to identify every individual line or file derived from PulseSync Materials.
+
+10.6. You may remove example names, placeholders, demonstration content, and template-specific presentation elements when creating Your addon, subject to Section 13.
+
+11. DOWNSTREAM RECIPIENTS AND SUBLICENSING
+
+11.1. You may distribute lawful copies of a PulseSync Addon to end users and other recipients in accordance with this License.
+
+11.2. You may grant recipients rights in Developer Code under terms of Your choosing.
+
+11.3. You may not grant recipients rights in PulseSync Materials or Derived PulseSync Materials beyond the scope of this License.
+
+11.4. A recipient wishing to modify, extract, reuse, or redistribute PulseSync Materials or Derived PulseSync Materials must independently comply with this License or obtain separate permission from the Licensor.
+
+11.5. Nothing in this License requires an end user to cease ordinary lawful use of a previously obtained PulseSync Addon solely because its distributor later loses rights under this License.
+
+12. THIRD-PARTY MATERIALS
+
+12.1. Third-party software, libraries, packages, assets, documentation, or other materials remain governed by their respective licenses and are not relicensed under this License merely because they appear in the same repository, package, dependency tree, build, or distribution.
+
+12.2. You are responsible for complying with applicable third-party license terms.
+
+12.3. In case of conflict, a license expressly applicable to identified third-party material governs that material.
+
+13. NAMES, LOGOS, AND DESIGNATIONS
+
+13.1. This License does not grant a general license to trademarks, service marks, logos, domain names, product names, or other protected designations associated with PulseSync.
+
+13.2. You may use the word “PulseSync” in a reasonable descriptive manner to state that Your addon is intended for, built for, or compatible with PulseSync.
+
+13.3. Without separate authorization, You may not represent or imply that Your addon, Development Product, service, organization, or repository is official, endorsed, certified, sponsored, or developed by the Licensor.
+
+13.4. Without separate authorization, You may not use PulseSync names, logos, or branding in a manner reasonably likely to cause confusion regarding origin, sponsorship, control, or affiliation.
+
+13.5. Nothing in this Section prevents truthful nominative or descriptive use to the extent required or permitted by applicable law.
+
+14. CONTRIBUTIONS TO OFFICIAL PULSESYNC REPOSITORIES
+
+14.1. “Contribution” means copyrightable code, documentation, or other material intentionally submitted by You through a pull request, commit, patch, or other mechanism with the clear purpose of inclusion in an official repository controlled by the Licensor. Bug reports, feature requests, general discussion, and ideas submitted without copyrightable implementation are not Contributions for purposes of this Section.
+
+14.2. If no separate contributor agreement applies, by submitting a Contribution You represent that You have sufficient rights to make the Contribution and grant the rights stated below.
+
+14.3. You grant the Licensor, for the entire term of the applicable exclusive rights and throughout the world, a royalty-free, simple (non-exclusive) license to reproduce, modify, adapt, translate, process, integrate, distribute, make available, commercialize, and otherwise use the Contribution as part of PulseSync software, addons, SDKs, templates, documentation, services, or related materials.
+
+14.4. The license under Section 14.3 includes the right to sublicense and to distribute the Contribution under this License or under other licensing terms selected by the Licensor.
+
+14.5. Submission of a Contribution does not itself transfer ownership of Your exclusive rights. Any assignment of exclusive rights requires a separate agreement where required by applicable law.
+
+15. TERM, TERRITORY, AND TERMINATION
+
+15.1. The territory of this License is the entire world.
+
+15.2. This License is granted for the entire term of the exclusive right applicable to the relevant PulseSync Materials, unless the rights granted to You terminate earlier in accordance with this License or mandatory applicable law.
+
+15.3. This License is royalty-free unless the Licensor and You separately agree in writing to additional paid rights or services.
+
+15.4. Your rights under this License cease to the extent permitted by applicable law upon a material breach of this License.
+
+15.5. Where a breach is capable of cure, rights granted under this License are reinstated if, within thirty (30) calendar days after You become aware of the breach or receive written notice of it, whichever occurs first, You cease the violating conduct and remedy the breach to the extent reasonably possible.
+
+15.6. Automatic reinstatement under Section 15.5 does not apply to a substantially similar intentional material breach by the same licensee after the Licensor has expressly notified that licensee that future substantially similar breaches will not qualify for automatic reinstatement.
+
+15.7. Nothing in this Section limits any right available to the Licensor under Article 1286.1 or other mandatory provisions of the Civil Code of the Russian Federation.
+
+16. EARLIER VERSIONS AND PREVIOUS LICENSES
+
+16.1. This License applies only to versions, revisions, files, and other materials that are expressly distributed under the PulseSync Addon Development License 1.1.
+
+16.2. Nothing in this License retroactively revokes, narrows, or modifies rights validly granted under a license that previously applied to a specific earlier version of material.
+
+16.3. Material previously distributed under the MIT License remains usable under the MIT License to the extent that the particular version relied upon was validly distributed under that license.
+
+16.4. New code, modifications, additions, and revisions first distributed only under this License are not licensed under the MIT License merely because they share history, structure, interfaces, ancestry, or repository lineage with earlier MIT-licensed material.
+
+16.5. A person relying on an earlier license bears responsibility for identifying the particular version or material on which that reliance is based.
+
+17. NO RIGHTS TO OTHER PULSESYNC COMPONENTS
+
+17.1. This License applies only to PulseSync Materials expressly distributed under it.
+
+17.2. It does not grant rights in unpublished, confidential, proprietary, or separately licensed PulseSync components, private source code, credentials, authentication systems, private APIs, databases, backend infrastructure, or services.
+
+17.3. Access to PulseSync services may be subject to separate terms, permissions, and technical restrictions.
+
+18. PATENTS
+
+18.1. No patent rights or patent licenses are granted under this License except as expressly stated in a separate written agreement or to the extent a right cannot lawfully be withheld under mandatory applicable law.
+
+19. WARRANTY DISCLAIMER
+
+19.1. TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE PULSESYNC MATERIALS AND DERIVED PULSESYNC MATERIALS ARE PROVIDED “AS IS” AND “AS AVAILABLE”, WITHOUT WARRANTIES, REPRESENTATIONS, OR CONDITIONS OF ANY KIND, WHETHER EXPRESS, IMPLIED, OR STATUTORY.
+
+19.2. TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSOR DISCLAIMS WARRANTIES INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, ACCURACY, RELIABILITY, SECURITY, AVAILABILITY, COMPATIBILITY, AND NON-INFRINGEMENT.
+
+19.3. THE LICENSOR DOES NOT WARRANT THAT THE MATERIALS WILL BE ERROR-FREE, SECURE, CONTINUOUSLY MAINTAINED, OR COMPATIBLE WITH ANY PARTICULAR VERSION OF PULSESYNC OR THIRD-PARTY SOFTWARE.
+
+19.4. Nothing in this Section excludes or limits a warranty, right, or liability that cannot lawfully be excluded or limited.
+
+20. LIMITATION OF LIABILITY
+
+20.1. TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSOR SHALL NOT BE LIABLE FOR INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, EXEMPLARY, OR PUNITIVE DAMAGES, OR FOR LOSS OF PROFITS, REVENUE, DATA, GOODWILL, BUSINESS OPPORTUNITY, OR BUSINESS INTERRUPTION, ARISING OUT OF OR IN CONNECTION WITH THE PULSESYNC MATERIALS, DERIVED PULSESYNC MATERIALS, OR THIS LICENSE.
+
+20.2. Nothing in this Section excludes or limits liability to the extent such exclusion or limitation is prohibited by applicable law.
+
+21. GOVERNING LAW AND DISPUTES
+
+21.1. This License, its interpretation, validity, performance, and legal relations arising out of or in connection with it are governed by the substantive law of the Russian Federation, without regard to conflict-of-laws rules, to the extent permitted by applicable law.
+
+21.2. Disputes arising out of or in connection with this License shall be resolved by competent courts determined in accordance with applicable procedural law unless the parties validly agree otherwise.
+
+22. LANGUAGE AND INTERPRETATION
+
+22.1. This License is published by the Licensor in Russian and English. Both language versions are official versions of this License.
+
+22.2. In the event of any discrepancy, inconsistency, ambiguity, or difference in interpretation between the Russian-language and English-language versions, the Russian-language version shall prevail to the extent permitted by applicable law.
+
+22.3. The Russian-language version is published in the file LICENSE.ru.md.
+
+23. SEVERABILITY
+
+23.1. If any provision of this License is found invalid, unlawful, or unenforceable, that provision shall be applied to the maximum extent permitted by applicable law.
+
+23.2. The invalidity or unenforceability of one provision does not affect the remaining provisions to the extent they can continue to operate independently.
+
+24. NO WAIVER
+
+24.1. A failure or delay by the Licensor in exercising a right or remedy does not constitute a waiver of that right or remedy.
+
+24.2. A waiver in one instance does not constitute a waiver in another instance.
+
+25. ADDITIONAL PERMISSIONS AND SEPARATE AGREEMENTS
+
+25.1. The Licensor may grant additional rights, exceptions, or commercial permissions by separate written agreement.
+
+25.2. An exception granted to one person does not apply to another person unless expressly stated.
+
+25.3. Where a separate written agreement between the Licensor and You expressly governs the same PulseSync Materials, that agreement prevails to the extent of an express conflict.
+
+26. RESERVATION OF RIGHTS AND CLASSIFICATION
+
+26.1. Except for rights expressly granted by this License or mandatory applicable law, all rights are reserved.
+
+26.2. Public accessibility of source code does not itself grant rights beyond those stated in this License.
+
+26.3. Because this License contains purpose-based and development-product restrictions, it is a source-available license and is not intended to qualify as an Open Source Initiative approved open-source license.
+
+END OF PULSESYNC ADDON DEVELOPMENT LICENSE 1.1
