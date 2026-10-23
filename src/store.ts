@@ -224,11 +224,14 @@ export async function initialize(api: AddonApi): Promise<void> {
               .map(item => ({
                   ...item,
                   status: item.status === 'published' || item.status === 'failed' || item.status === 'ready' ||
-                      item.status === 'updated' || item.status === 'removed' || item.status === 'abandoned'
+                      item.status === 'awaiting_approval' || item.status === 'updated' || item.status === 'removed' ||
+                      item.status === 'abandoned'
                       ? item.status
                       : item.status === 'running'
                           ? 'running'
                           : 'queued',
+                  runUrl: typeof item.runUrl === 'string' && isStableHttpsUrl(item.runUrl) ? item.runUrl : undefined,
+                  issueUrl: typeof item.issueUrl === 'string' && isStableHttpsUrl(item.issueUrl) ? item.issueUrl : undefined,
               }) as JobRecord)
         : []
     let cached: CachedLibrary | null = null
@@ -277,18 +280,36 @@ export async function initialize(api: AddonApi): Promise<void> {
     })
 
     if (config) {
+        void refreshRepoAccess({ silent: true })
         void refreshLibrary({ silent: true }).catch(error => setLastError(errorText(error)))
     }
 }
 
-export async function saveSetup(form: SetupForm): Promise<SetupResult> {
+export function isRepositoryAdmin(): boolean {
+    return state.repoInfo?.canAdmin === true
+}
+
+export async function refreshRepoAccess(options: { silent?: boolean } = {}): Promise<RepoInfo | null> {
+    const api = requireApi()
+    if (!state.config) return null
+    try {
+        const info = await apiFor(api).getAccessInfo()
+        setState({ repoInfo: info })
+        return info
+    } catch (error) {
+        if (!options.silent) setState({ lastError: errorText(error) })
+        return null
+    }
+}
+
+export async function saveSetup(form: SetupForm, options: { readOnly?: boolean } = {}): Promise<SetupResult> {
     const api = requireApi()
     const repo = normalizeRepoInput(form.repo)
     if (!repo) throw new Error('Укажите репозиторий в виде владелец/репозиторий или полной ссылкой GitHub.')
     const suppliedToken = form.token.trim()
-    const effectiveToken = suppliedToken || token
+    const effectiveToken = options.readOnly ? '' : suppliedToken || token
     const sameRepo = state.config?.repo === repo
-    const rememberToken = form.rememberToken !== false
+    const rememberToken = options.readOnly ? false : form.rememberToken !== false
     setState({ busy: 'setup', lastError: '' })
     try {
         const client = new GitHubClient(api, repo, effectiveToken, '')
@@ -312,8 +333,11 @@ export async function saveSetup(form: SetupForm): Promise<SetupResult> {
             hasToken: Boolean(token),
             repoInfo: result.repo,
             workflow: result.workflow,
+            disabled: [],
+            removed: [],
             busy: '',
         })
+        await persistSets()
         pushNotice('success', `Подключено: ${result.repo.fullName}, ветка ${result.repo.defaultBranch}.`)
         await refreshLibrary({ silent: true })
         return result
@@ -399,6 +423,10 @@ export function findMapping(trackId: string): TrackMapping | null {
 
 export function isMappingEnabled(mapping: TrackMapping): boolean {
     return mapping.enabled && !state.disabled.includes(mapping.trackId) && !state.removed.includes(mapping.trackId)
+}
+
+export function isMappingHiddenLocally(mapping: TrackMapping): boolean {
+    return !mapping.enabled || state.disabled.includes(mapping.trackId) || state.removed.includes(mapping.trackId)
 }
 
 export function jobForTrack(trackId: string, actions: JobRecord['action'][] = ['search']): JobRecord | null {
@@ -513,6 +541,7 @@ function autoCandidate(job: JobRecord): SourceCandidate | null {
     const targetMs = Math.max(0, job.trackDurationMs || 0)
     const ranked = candidates
         .filter(candidate => {
+            if (candidate.unavailable) return false
             if (!targetMs || !candidate.durationMs) return false
             if (candidate.score < 0.72) return false
             const warnings = (Array.isArray(candidate.warnings) ? candidate.warnings : []).map(warning => warning.toLowerCase())
@@ -577,6 +606,18 @@ export async function confirmCandidate(sourceJob: JobRecord, candidate: SourceCa
     if (!sourceJob.candidates?.some(item => item.id === candidate.id)) {
         throw new Error('Кандидат не найден в исходном задании.')
     }
+    const awaiting = state.jobs.find(
+        job =>
+            job.trackId === sourceJob.trackId &&
+            (job.action === 'confirm' || job.action === 'manual') &&
+            job.status === 'awaiting_approval',
+    )
+    if (awaiting) {
+        throw new Error('Заявка для этого трека уже ждёт проверки владельцем. Откройте «Задания» в панели.')
+    }
+    if (candidate.unavailable) {
+        throw new Error(candidate.unavailableReason || 'Этот источник помечен как недоступный. Выберите другую запись.')
+    }
     const job = createJob(
         'confirm',
         { id: sourceJob.trackId, title: sourceJob.trackTitle, artist: sourceJob.trackArtist },
@@ -591,11 +632,23 @@ export async function confirmCandidate(sourceJob: JobRecord, candidate: SourceCa
         source_job_id: sourceJob.id,
         candidate_id: candidate.id,
     })
+    if (!isRepositoryAdmin()) {
+        pushNotice('info', 'Заявка отправлена владельцу. Публикация начнётся после подтверждения в GitHub.')
+    }
     return job
 }
 
 export async function startManualAdd(track: TrackRef, meta: TrackSearchMeta, directUrl: string): Promise<JobRecord> {
     const api = requireApi()
+    const awaiting = state.jobs.find(
+        job =>
+            job.trackId === track.id &&
+            (job.action === 'confirm' || job.action === 'manual') &&
+            job.status === 'awaiting_approval',
+    )
+    if (awaiting) {
+        throw new Error('Заявка для этого трека уже ждёт проверки владельцем. Откройте «Задания» в панели.')
+    }
     const url = directUrl.trim()
     if (!isStableHttpsUrl(url)) {
         throw new Error('Нужна постоянная HTTPS-ссылка на аудиофайл без временных подписей (например, Releases вашего репозитория).')
@@ -613,13 +666,76 @@ export async function startManualAdd(track: TrackRef, meta: TrackSearchMeta, dir
         duration: String(Math.max(0, Math.round(meta.durationMs / 1000))),
         source_url: url,
     })
+    if (!isRepositoryAdmin()) {
+        pushNotice('info', 'Заявка на ручную ссылку отправлена владельцу. Публикация начнётся после подтверждения.')
+    }
     return job
+}
+
+export async function startBatchSearch(
+    tracks: TrackRef[],
+    limit = 10,
+): Promise<{ started: number; skipped: number; failed: number }> {
+    const api = requireApi()
+    if (!token) throw new Error('Для массового поиска нужен GitHub-токен.')
+    if (!state.config) throw new Error('Сначала подключите GitHub-репозиторий.')
+    const unique: TrackRef[] = []
+    const seen = new Set<string>()
+    for (const track of tracks) {
+        if (!track?.id || seen.has(track.id) || !isYandexTrackId(track.id)) continue
+        seen.add(track.id)
+        unique.push(track)
+    }
+    let started = 0
+    let skipped = 0
+    let failed = 0
+    for (const track of unique.slice(0, Math.max(1, Math.min(20, limit)))) {
+        const mapping = findMapping(track.id)
+        if (mapping && isMappingEnabled(mapping)) {
+            skipped += 1
+            continue
+        }
+        if (jobForTrack(track.id, ['search'])) {
+            skipped += 1
+            continue
+        }
+        try {
+            const resolved = !track.title?.trim() || !track.artist?.trim() ? await resolveTrack(api, track) : track
+            const title = (resolved.title || track.title || '').trim()
+            const artist = (resolved.artist || track.artist || '').trim()
+            if (!title || !artist) {
+                skipped += 1
+                continue
+            }
+            await startSearch(resolved, {
+                id: resolved.id,
+                title,
+                artist,
+                durationMs: Math.max(0, resolved.durationMs || track.durationMs || 0),
+            }, '')
+            started += 1
+        } catch {
+            failed += 1
+        }
+    }
+    if (started) {
+        pushNotice('success', `Массовый поиск: запущено ${started}, пропущено ${skipped}${failed ? `, ошибок ${failed}` : ''}.`)
+    } else if (failed) {
+        pushNotice('error', `Массовый поиск не запустился: ошибок ${failed}, пропущено ${skipped}.`)
+    } else {
+        pushNotice('info', skipped ? 'Все треки из очереди уже имеют замену или активный поиск.' : 'В очереди нет треков.')
+    }
+    return { started, skipped, failed }
 }
 
 export async function setMappingEnabled(trackId: string, enabled: boolean): Promise<void> {
     const api = requireApi()
     const mapping = findMapping(trackId)
     if (!mapping) return
+    if (!isRepositoryAdmin() && !mapping.enabled) {
+        pushNotice('info', 'Замена отключена владельцем библиотеки.')
+        return
+    }
     const disabled = new Set(state.disabled)
     const removed = new Set(state.removed)
     if (enabled) {
@@ -643,7 +759,7 @@ export async function setMappingEnabled(trackId: string, enabled: boolean): Prom
     } catch (error) {
         pushNotice('error', `Не удалось применить подмену: ${errorText(error)}`)
     }
-    if (token && state.config) {
+    if (isRepositoryAdmin() && token && state.config) {
         const job = createJob('toggle', { id: trackId, title: mapping.title, artist: mapping.artists.join(', ') }, { silent: true })
         addJob(job)
         try {
@@ -651,6 +767,8 @@ export async function setMappingEnabled(trackId: string, enabled: boolean): Prom
         } catch (error) {
             pushNotice('error', `Локально применено, но в GitHub не сохранено: ${errorText(error)}`)
         }
+    } else if (token && state.config) {
+        pushNotice('info', 'Изменение применено только у вас. В общей библиотеке его может сохранить владелец.')
     } else {
         pushNotice('info', 'Изменение применено локально. Для сохранения в облаке подключите токен.')
     }
@@ -671,17 +789,19 @@ export async function removeMapping(trackId: string): Promise<void> {
     } catch (error) {
         pushNotice('error', `Не удалось снять регистрацию: ${errorText(error)}`)
     }
-    if (token && state.config) {
+    if (isRepositoryAdmin() && token && state.config) {
         const job = createJob('remove', { id: trackId, title: mapping.title, artist: mapping.artists.join(', ') }, { silent: true })
         addJob(job)
         try {
             await dispatchJob(api, job, { track_id: trackId })
-            pushNotice('info', 'Связь скрыта локально, удаление из индекса отправлено в GitHub. Аудиофайл в Releases не удаляется.')
+            pushNotice('info', 'Удаление из индекса и Releases отправлено в GitHub.')
         } catch (error) {
             pushNotice('error', `Связь скрыта локально, но GitHub не обновился: ${errorText(error)}`)
         }
+    } else if (isRepositoryAdmin() && !token) {
+        pushNotice('info', 'Связь скрыта локально. Для удаления из GitHub подключите токен.')
     } else {
-        pushNotice('info', 'Связь скрыта локально. Аудиофайл и запись в публичном индексе не удалены: нет токена.')
+        pushNotice('info', 'Связь скрыта только у вас. Общая библиотека не изменилась.')
     }
 }
 
@@ -726,12 +846,19 @@ function parseCandidate(raw: unknown): SourceCandidate | null {
         warnings: Array.isArray(item.warnings)
             ? item.warnings.map(value => sanitizeText(value, 160)).filter(Boolean).slice(0, 12)
             : [],
+        unavailable: item.unavailable === true,
+        unavailableReason: sanitizeText(item.unavailableReason, 300) || undefined,
     }
+}
+
+function safeJobUrl(value: unknown, fallback: string | undefined): string | undefined {
+    const clean = sanitizeText(value, 1000)
+    return clean && isStableHttpsUrl(clean) ? clean : fallback
 }
 
 function mergeRemoteJob(job: JobRecord, remote: Record<string, unknown>): JobRecord {
     const statusRaw = sanitizeText(remote.status, 30)
-    const status = (['queued', 'running', 'ready', 'published', 'failed', 'updated', 'removed', 'abandoned'] as const).includes(
+    const status = (['queued', 'running', 'ready', 'awaiting_approval', 'published', 'failed', 'updated', 'removed', 'abandoned'] as const).includes(
         statusRaw as JobRecord['status'],
     )
         ? (statusRaw as JobRecord['status'])
@@ -768,12 +895,16 @@ function mergeRemoteJob(job: JobRecord, remote: Record<string, unknown>): JobRec
         error,
         published,
         expiresAt: sanitizeText(remote.expiresAt, 40) || job.expiresAt,
-        runUrl: sanitizeText(remote.runUrl, 1000) || job.runUrl,
+        runUrl: safeJobUrl(remote.runUrl, job.runUrl),
+        issueUrl: safeJobUrl(remote.issueUrl, job.issueUrl),
+        issueNumber: Math.max(0, Number(remote.issueNumber) || job.issueNumber || 0) || undefined,
+        requestedBy: sanitizeText(remote.requestedBy, 80) || job.requestedBy,
         startedAt,
         finishedAt: ['ready', 'published', 'failed', 'updated', 'removed', 'abandoned'].includes(status)
             ? remoteUpdatedAt || job.finishedAt
             : job.finishedAt,
         etaSeconds: Math.max(0, Number(remote.etaSeconds) || job.etaSeconds || 0) || undefined,
+        note: sanitizeText(remote.note, 600) || job.note,
         updatedAt: new Date().toISOString(),
     }
 }
@@ -864,7 +995,7 @@ async function pollJob(job: JobRecord): Promise<void> {
     if (ageMs > 20_000) {
         const run = await client.getRunForJob(job.id)
         if (run) {
-            const patch: Partial<JobRecord> = { runUrl: run.htmlUrl, runId: run.id }
+            const patch: Partial<JobRecord> = { runUrl: isStableHttpsUrl(run.htmlUrl) ? run.htmlUrl : undefined, runId: run.id }
             if (run.startedAt && !job.startedAt) patch.startedAt = run.startedAt
             if (run.status === 'completed') {
                 if (run.conclusion === 'success') {
@@ -945,6 +1076,14 @@ export async function resumePendingJobs(): Promise<void> {
     await pollPendingJobs()
 }
 
+export async function refreshJob(jobId: string): Promise<void> {
+    const job = state.jobs.find(item => item.id === jobId)
+    if (!job) return
+    if (job.repo !== state.config?.repo) throw new Error('Задание относится к другому репозиторию.')
+    if (!token) throw new Error('Для проверки статуса нужен GitHub-токен.')
+    await pollJob(job)
+}
+
 export async function cancelJob(jobId: string): Promise<void> {
     const api = requireApi()
     const job = state.jobs.find(item => item.id === jobId)
@@ -959,7 +1098,7 @@ export async function cancelJob(jobId: string): Promise<void> {
             runId = run.id
             updateJobLocal(job.id, {
                 runId: run.id,
-                runUrl: run.htmlUrl || job.runUrl,
+                runUrl: isStableHttpsUrl(run.htmlUrl) ? run.htmlUrl : job.runUrl,
                 startedAt: job.startedAt || run.startedAt,
             })
         }

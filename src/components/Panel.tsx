@@ -98,7 +98,7 @@ export function Panel({ controller, initialTrack, initialTab, initialAction }: P
                         onClick={() => setTab(value)}
                     >
                         {label}
-                        {value === 'jobs' && state.jobs.some(job => job.status === 'queued' || job.status === 'running') ? (
+                        {value === 'jobs' && state.jobs.some(job => job.status === 'queued' || job.status === 'running' || job.status === 'awaiting_approval') ? (
                             <span className="uc-tab-dot" />
                         ) : null}
                     </button>

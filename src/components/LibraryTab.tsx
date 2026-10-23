@@ -2,7 +2,14 @@ import { useMemo, useState } from 'react'
 
 import type { TrackMapping, TrackRef } from '../types.ts'
 import { formatDate, formatDuration, providerLabel, pluralRu } from '../lib/format.ts'
-import { isMappingEnabled, refreshLibrary, removeMapping, restoreMapping, setMappingEnabled } from '../store.ts'
+import {
+    isMappingEnabled,
+    isRepositoryAdmin,
+    refreshLibrary,
+    removeMapping,
+    restoreMapping,
+    setMappingEnabled,
+} from '../store.ts'
 import { useStore } from './useStore.ts'
 
 type Props = {
@@ -23,6 +30,7 @@ function trackRef(mapping: TrackMapping): TrackRef {
 
 export function LibraryTab({ onOpenTrack, onOpenSetup }: Props) {
     const state = useStore()
+    const admin = isRepositoryAdmin()
     const [query, setQuery] = useState('')
     const [filter, setFilter] = useState<Filter>('all')
     const [busyId, setBusyId] = useState('')
@@ -145,6 +153,7 @@ export function LibraryTab({ onOpenTrack, onOpenSetup }: Props) {
                                 const enabled = isMappingEnabled(mapping)
                                 const removed = state.removed.includes(mapping.trackId)
                                 const busy = busyId === mapping.trackId
+                                const globallyDisabled = !mapping.enabled
                                 return (
                                     <article className="uc-list-item" key={mapping.trackId}>
                                         <div className="uc-list-main">
@@ -186,7 +195,8 @@ export function LibraryTab({ onOpenTrack, onOpenSetup }: Props) {
                                                 <button
                                                     type="button"
                                                     className={`uc-toggle ${enabled ? 'uc-toggle-on' : ''}`}
-                                                    disabled={busy}
+                                                    disabled={busy || (!admin && globallyDisabled)}
+                                                    title={!admin && globallyDisabled ? 'Замена отключена владельцем библиотеки' : undefined}
                                                     onClick={() => void toggle(mapping)}
                                                 >
                                                     <span className="uc-toggle-dot" />
@@ -196,7 +206,7 @@ export function LibraryTab({ onOpenTrack, onOpenSetup }: Props) {
                                             {confirmId === mapping.trackId ? (
                                                 <>
                                                     <button type="button" className="uc-link uc-small uc-error-text" disabled={busy} onClick={() => void remove(mapping)}>
-                                                        Точно убрать
+                                                        {admin ? 'Точно удалить' : 'Точно скрыть'}
                                                     </button>
                                                     <button type="button" className="uc-link uc-small" onClick={() => setConfirmId('')}>
                                                         Нет
@@ -204,7 +214,7 @@ export function LibraryTab({ onOpenTrack, onOpenSetup }: Props) {
                                                 </>
                                             ) : (
                                                 <button type="button" className="uc-link uc-small" onClick={() => setConfirmId(mapping.trackId)}>
-                                                    Удалить
+                                                    {admin ? 'Удалить' : 'Скрыть у себя'}
                                                 </button>
                                             )}
                                         </div>
@@ -217,7 +227,11 @@ export function LibraryTab({ onOpenTrack, onOpenSetup }: Props) {
                                 </div>
                             )}
                         </div>
-                        <div className="uc-muted uc-small">«Удалить» скрывает связь в индексе; файл остаётся в Releases.</div>
+                        <div className="uc-muted uc-small">
+                            {admin
+                                ? '«Удалить» убирает связь из list.json и аудиофайлы трека из Releases.'
+                                : '«Скрыть у себя» не меняет общую библиотеку. Удалять из GitHub может только владелец.'}
+                        </div>
                     </>
                 )}
             </section>

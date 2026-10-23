@@ -1,17 +1,19 @@
 # Uncensor Cloud — облачный репозиторий
 
-Здесь работает GitHub Actions workflow **Uncensor Cloud**. Аддон PulseSync запускает его через `workflow_dispatch`, ищет записи и публикует аудио в Releases только после подтверждения.
+Здесь работают GitHub Actions workflows **Uncensor Cloud** и **Uncensor Cloud Approval**. Аддон PulseSync запускает поиск и заявки через `workflow_dispatch`; владелец проверяет заявки в Issues и публикует аудио в Releases только после подтверждения.
 
 Перед первым запуском:
 
 1. Оставьте репозиторий **публичным**.
-2. Включите **Actions** и workflow **Uncensor Cloud**.
-3. В **Settings → Actions → General → Workflow permissions** выберите **Read and write permissions**.
-4. Не меняйте путь `.github/workflows/uncensor-cloud.yml` и `cloud/uncensor_worker.py`.
+2. Включите **Actions** и оба workflow: **Uncensor Cloud** и **Uncensor Cloud Approval**.
+3. В **Settings → Actions → General → Workflow permissions** выберите **Read and write permissions**. Approval workflow сам запрашивает `contents: write` и `issues: write`.
+4. Не меняйте пути `.github/workflows/uncensor-cloud.yml`, `.github/workflows/uncensor-approve.yml` и `cloud/uncensor_worker.py`. Approval workflow должен быть в ветке по умолчанию.
 5. В аддоне укажите `владелец/репозиторий` и fine-grained token с правами:
    - **Contents: Read and write**
    - **Actions: Read and write**
    - **Metadata: Read**
+
+Друзьям для чтения общей библиотеки токен не нужен. Для добавления записей друг подключает свой fine-grained token с правами **Actions: Read and write**, **Contents: Read**, **Metadata: Read** — без Contents write, чтобы не обходить проверку. Его трек попадает в Issue с меткой `uncensor-request`; владелец ставит `uncensor-approved` или `uncensor-rejected`. Только после `uncensor-approved` worker скачивает аудио и обновляет `list.json`. Метки создаются автоматически при первой заявке. Прямой collaborator с Contents write всё ещё может обойти это ограничение через сайт GitHub, поэтому не выдавайте такой доступ без необходимости.
 
 Подробная инструкция — в `setup-ru.html`.
 
@@ -19,13 +21,14 @@
 
 - `list.json` — публичный индекс подмен. Не добавляйте сюда токены.
 - `jobs/<id>.json` — статусы заданий, создаются автоматически.
-- Релиз `library` — аудиофайлы, которые появляются только после подтверждения. На каждый трек хранится один файл; старые версии удаляются автоматически.
+- `submissions/<id>.json` — данные заявок не-владельцев; удаляются после публикации или отклонения.
+- Релиз `library` — аудиофайлы, которые появляются только после подтверждения. На каждый трек хранится один файл; старые версии удаляются автоматически, удаление связи удаляет и файл.
 
 ## Важно
 
 - Автоматическая проверка не определяет цензуру. Проверяйте источник перед публикацией.
-- YouTube/SoundCloud могут блокировать IP GitHub Actions.
+- YouTube/SoundCloud могут блокировать IP GitHub Actions. Для YouTube добавьте секрет `YTDLP_COOKIES` с cookies в формате Netscape; SoundCloud с DRM скачать нельзя.
 - Аудио публично. Публикуя его, владелец репозитория отвечает за соблюдение авторских прав. Публикуйте только записи, на которые у вас есть права.
 - Приватный репозиторий не подходит для воспроизведения по публичным ссылкам.
 
-stupidCensor 1.1.1 · xaunds · PulseSync Addon Development License 1.1.
+stupidCensor 1.1.2 · xaunds · PulseSync Addon Development License 1.1.

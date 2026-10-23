@@ -1,0 +1,147 @@
+name: Uncensor Cloud Approval
+run-name: "Uncensor approval #${{ github.event.issue.number }}"
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: uncensor-approval-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    name: Review request
+    if: |
+      github.event.issue.state == 'open' &&
+      contains(github.event.issue.labels.*.name, 'uncensor-request') &&
+      (github.event.label.name == 'uncensor-approved' || github.event.label.name == 'uncensor-rejected')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Verify repository owner
+        env:
+          ACTOR: ${{ github.event.sender.login }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          if [ "$ACTOR" != "$OWNER" ]; then
+            echo "::error::Подтверждать или отклонять заявки может только владелец репозитория."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: cloud/requirements.txt
+
+      - name: Find request
+        id: request
+        env:
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          python - <<'PY'
+          import glob
+          import json
+          import os
+
+          issue = int(os.environ["ISSUE_NUMBER"])
+          matches = []
+          for path in glob.glob("submissions/*.json"):
+              try:
+                  with open(path, encoding="utf-8") as handle:
+                      data = json.load(handle)
+              except (OSError, json.JSONDecodeError):
+                  continue
+              if isinstance(data, dict) and int(data.get("issueNumber") or 0) == issue:
+                  matches.append((path, data))
+          if not matches:
+              raise SystemExit(f"Заявка для issue #{issue} не найдена в submissions/")
+
+          path, data = max(matches, key=lambda item: item[0])
+          fields = {
+              "found": "true",
+              "path": path,
+              "action": str(data.get("action") or ""),
+              "job_id": str(data.get("jobId") or ""),
+              "track_id": str(data.get("trackId") or ""),
+              "track_title": str(data.get("trackTitle") or ""),
+              "track_artist": str(data.get("trackArtist") or ""),
+              "duration": str(max(0, int(data.get("trackDurationMs") or 0)) // 1000),
+              "source_job_id": str(data.get("sourceJobId") or ""),
+              "candidate_id": str(data.get("candidateId") or ""),
+              "source_url": str(data.get("sourceUrl") or ""),
+              "requested_by": str(data.get("requestedBy") or ""),
+          }
+          if fields["action"] not in ("confirm", "manual"):
+              raise SystemExit(f"Неизвестное действие заявки: {fields['action']!r}")
+          if not fields["job_id"] or not fields["track_id"]:
+              raise SystemExit("В заявке нет jobId или trackId")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              for key, value in fields.items():
+                  output.write(f"{key}={value.replace(chr(10), ' ')}\n")
+          PY
+
+      - name: Ensure ffmpeg
+        if: github.event.label.name == 'uncensor-approved'
+        timeout-minutes: 5
+        run: |
+          if ! command -v ffmpeg >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
+
+      - name: Install Python dependencies
+        timeout-minutes: 5
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --disable-pip-version-check -r cloud/requirements.txt
+
+      - name: Publish approved request
+        if: github.event.label.name == 'uncensor-approved'
+        timeout-minutes: 24
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.event.sender.login }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          YTDLP_COOKIES: ${{ secrets.YTDLP_COOKIES }}
+          YTDLP_PROXY: ${{ secrets.YTDLP_PROXY }}
+          PYTHONUNBUFFERED: "1"
+          APPROVAL_ISSUE: ${{ github.event.issue.number }}
+          ACTION: ${{ steps.request.outputs.action }}
+          JOB_ID: ${{ steps.request.outputs.job_id }}
+          TRACK_ID: ${{ steps.request.outputs.track_id }}
+          TITLE: ${{ steps.request.outputs.track_title }}
+          ARTIST: ${{ steps.request.outputs.track_artist }}
+          DURATION: ${{ steps.request.outputs.duration }}
+          SOURCE_JOB_ID: ${{ steps.request.outputs.source_job_id }}
+          CANDIDATE_ID: ${{ steps.request.outputs.candidate_id }}
+          SOURCE_URL: ${{ steps.request.outputs.source_url }}
+        run: python cloud/uncensor_worker.py
+
+      - name: Reject request
+        if: github.event.label.name == 'uncensor-rejected'
+        timeout-minutes: 5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTOR: ${{ github.event.sender.login }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          PYTHONUNBUFFERED: "1"
+          APPROVAL_ISSUE: ${{ github.event.issue.number }}
+          ACTION: reject
+          JOB_ID: ${{ steps.request.outputs.job_id }}
+          TRACK_ID: ${{ steps.request.outputs.track_id }}
+          TITLE: ${{ steps.request.outputs.track_title }}
+          ARTIST: ${{ steps.request.outputs.track_artist }}
+          DURATION: ${{ steps.request.outputs.duration }}
+        run: python cloud/uncensor_worker.py

@@ -14,6 +14,7 @@ import {
     checkAudioUrl,
     confirmCandidate,
     isMappingEnabled,
+    isRepositoryAdmin,
     removeMapping,
     resolveTrackForUi,
     restoreMapping,
@@ -37,14 +38,15 @@ function durationDelta(targetMs: number, candidateMs: number): string {
     return `длительность ${delta > 0 ? '+' : ''}${delta} с`
 }
 
-function pendingLabel(job: JobRecord): string {
+function pendingLabel(job: JobRecord, admin: boolean): string {
     if (job.status === 'queued') return 'В очереди GitHub Actions'
     if (job.action === 'search') return 'Ищем подходящие записи'
-    return 'Публикуем выбранную запись'
+    return admin ? 'Публикуем выбранную запись' : 'Отправляем заявку владельцу'
 }
 
 export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs }: Props) {
     const state = useStore()
+    const admin = isRepositoryAdmin()
     const seed = initialTrack ?? currentTrack
     const [track, setTrack] = useState<TrackRef | null>(seed)
     const [resolving, setResolving] = useState(false)
@@ -257,6 +259,7 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
 
     const timing = activeJob ? jobTiming(activeJob, now) : null
     const readyCandidates = searchJob?.status === 'ready' ? (searchJob.candidates || []).slice().sort((a, b) => b.score - a.score) : []
+    const replaceBlocked = !admin && Boolean(mapping)
 
     return (
         <div className="uc-stack">
@@ -294,9 +297,15 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                                 <button
                                     type="button"
                                     className={`uc-toggle ${enabled ? 'uc-toggle-on' : ''}`}
-                                    disabled={busy === 'toggle'}
+                                    disabled={busy === 'toggle' || (!admin && !mapping.enabled)}
                                     onClick={() => void toggleMapping()}
-                                    title={enabled ? 'Выключить замену' : 'Включить замену'}
+                                    title={
+                                        !admin && !mapping.enabled
+                                            ? 'Замена отключена владельцем библиотеки'
+                                            : enabled
+                                              ? 'Выключить замену'
+                                              : 'Включить замену'
+                                    }
                                 >
                                     <span className="uc-toggle-dot" />
                                     {enabled ? 'Вкл.' : 'Выкл.'}
@@ -317,7 +326,7 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                             </div>
                         </div>
                         <details className="uc-more">
-                            <summary>Файл и удаление</summary>
+                            <summary>{admin ? 'Файл и удаление' : 'Файл и скрытие'}</summary>
                             <div className="uc-more-body">
                                 <a className="uc-link uc-break" href={mapping.audioUrl} target="_blank" rel="noreferrer">
                                     {mapping.audioUrl}
@@ -329,7 +338,7 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                                     {confirmRemove ? (
                                         <>
                                             <button type="button" className="uc-btn uc-btn-small uc-danger" disabled={busy === 'remove'} onClick={() => void remove()}>
-                                                Убрать связь
+                                                {admin ? 'Удалить из GitHub' : 'Скрыть у себя'}
                                             </button>
                                             <button type="button" className="uc-btn uc-btn-small" onClick={() => setConfirmRemove(false)}>
                                                 Отмена
@@ -337,10 +346,12 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                                         </>
                                     ) : (
                                         <button type="button" className="uc-btn uc-btn-small" onClick={() => setConfirmRemove(true)}>
-                                            Удалить связь
+                                            {admin ? 'Удалить связь' : 'Скрыть у себя'}
                                         </button>
                                     )}
-                                    <span className="uc-muted uc-small">Файл в Releases остаётся.</span>
+                                    <span className="uc-muted uc-small">
+                                        {admin ? 'Запись и файлы трека будут удалены из GitHub.' : 'Общая библиотека не изменится.'}
+                                    </span>
                                 </div>
                                 {urlCheck ? (
                                     <div className={`uc-check ${urlCheck.startsWith('Доступен') ? 'uc-ok-text' : 'uc-error-text'}`}>{urlCheck}</div>
@@ -356,7 +367,7 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                     <div className="uc-section-head">
                         <div>
                             <div className="uc-eyebrow">GitHub Actions</div>
-                            <div className="uc-section-title">{pendingLabel(activeJob)}</div>
+                            <div className="uc-section-title">{pendingLabel(activeJob, admin)}</div>
                         </div>
                         <span className="uc-eta">{timing.label}</span>
                     </div>
@@ -375,7 +386,7 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                         >
                             {busy === `cancel:${activeJob.id}` ? 'Отменяем…' : 'Отменить'}
                         </button>
-                        {activeJob.runUrl ? (
+                        {admin && activeJob.runUrl ? (
                             <a className="uc-link uc-small" href={activeJob.runUrl} target="_blank" rel="noreferrer">
                                 Журнал Actions
                             </a>
@@ -404,12 +415,16 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                     {readyCandidates.length ? (
                         <>
                             <div className="uc-hint">
-                                Файл скачается и проверится только после нажатия «Сохранить». До этого в Releases ничего не
-                                публикуется.
+                                {replaceBlocked
+                                    ? 'Существующую запись может заменить только владелец репозитория.'
+                                    : admin
+                                      ? 'Файл скачается и проверится только после нажатия «Сохранить». До этого в Releases ничего не публикуется.'
+                                      : 'Файл скачается только после подтверждения владельцем. Ваш выбор попадёт в GitHub Issues как заявка.'}
                             </div>
                             <div className="uc-candidate-list">
                                 {readyCandidates.map(candidate => {
                                     const confirming = busy === `confirm:${candidate.id}`
+                                    const unavailable = candidate.unavailable === true
                                     return (
                                         <article className="uc-candidate" key={candidate.id}>
                                             <div className="uc-candidate-main">
@@ -427,6 +442,11 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                                                     {candidate.warnings.slice(0, 3).map(warning => (
                                                         <span className="uc-warn-badge" key={warning}>{warning}</span>
                                                     ))}
+                                                    {unavailable ? (
+                                                        <span className="uc-warn-badge">
+                                                            {candidate.unavailableReason || 'Источник недоступен'}
+                                                        </span>
+                                                    ) : null}
                                                 </div>
                                             </div>
                                             <div className="uc-candidate-actions">
@@ -436,10 +456,10 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                                                 <button
                                                     type="button"
                                                     className="uc-btn uc-btn-primary uc-btn-small"
-                                                    disabled={confirming}
+                                                    disabled={confirming || unavailable || replaceBlocked}
                                                     onClick={() => void runConfirm(candidate)}
                                                 >
-                                                    {confirming ? 'Отправляем…' : 'Сохранить'}
+                                                    {unavailable ? 'Недоступно' : confirming ? 'Отправляем…' : replaceBlocked ? 'Только владелец' : admin ? 'Сохранить' : 'На проверку'}
                                                 </button>
                                             </div>
                                         </article>
@@ -524,6 +544,7 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                     <div className="uc-hint">
                         Подойдёт постоянная ссылка на m4a, mp3, aac, ogg, opus, flac или wav. Страница YouTube или
                         SoundCloud — нет.
+                        {replaceBlocked ? ' Заменить существующую запись может только владелец.' : admin ? '' : ' Ссылка уйдёт владельцу на проверку.'}
                     </div>
                     <div className="uc-inline">
                         <input
@@ -535,10 +556,10 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                         <button
                             type="button"
                             className="uc-btn uc-btn-primary"
-                            disabled={busy === 'manual' || !manualUrl.trim() || !state.hasToken}
+                            disabled={busy === 'manual' || !manualUrl.trim() || !state.hasToken || replaceBlocked}
                             onClick={() => void runManual()}
                         >
-                            {busy === 'manual' ? 'Отправляем…' : 'Сохранить'}
+                            {busy === 'manual' ? 'Отправляем…' : replaceBlocked ? 'Только владелец' : admin ? 'Сохранить' : 'На проверку'}
                         </button>
                     </div>
                 </div>

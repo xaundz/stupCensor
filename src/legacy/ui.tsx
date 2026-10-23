@@ -209,7 +209,6 @@ export function mountLegacyUi(context: LegacyContext) {
 
     const offSettings = settings.subscribe(() => {
         if (!settings.store.enabled) closePanel()
-        ensurePlayerButton()
     })
 
     const offJobs = subscribeStore(() => {
@@ -222,41 +221,6 @@ export function mountLegacyUi(context: LegacyContext) {
     })
 
     const markers = startReplacementMarkers()
-
-    const ensurePlayerButton = () => {
-        const existing = document.querySelector<HTMLElement>('[data-test-id="STUPIDCENSOR_PLAYER_BUTTON"]')
-        if (!settings.store.enabled) {
-            existing?.remove()
-            return
-        }
-        const sample = document.querySelector<HTMLElement>(
-            '[data-test-id="PLAYERBAR_DESKTOP_CONTEXT_MENU_BUTTON"]',
-        )
-        const parent = sample?.parentElement
-        if (!sample || !parent) return
-        if (existing && parent.contains(existing)) return
-        existing?.remove()
-        const button = sample.cloneNode(true) as HTMLElement
-        button.removeAttribute('id')
-        button.removeAttribute('aria-expanded')
-        button.removeAttribute('aria-haspopup')
-        button.removeAttribute('aria-live')
-        button.removeAttribute('aria-busy')
-        button.setAttribute('data-test-id', 'STUPIDCENSOR_PLAYER_BUTTON')
-        button.setAttribute('aria-label', 'stupidCensor')
-        button.setAttribute('title', 'stupidCensor')
-        const use = button.querySelector('use')
-        if (use) {
-            use.setAttribute('href', '/icons/sprite.svg#link_xxs')
-            use.setAttribute('xlink:href', '/icons/sprite.svg#link_xxs')
-        }
-        button.addEventListener('click', event => {
-            event.preventDefault()
-            event.stopPropagation()
-            void openPanel({ track: currentTrackRef(context), initialTab: 'track' })
-        })
-        parent.insertBefore(button, sample)
-    }
 
     const addMenuItems = (menu: HTMLElement) => {
         if (!settings.store.enabled) return
@@ -312,10 +276,8 @@ export function mountLegacyUi(context: LegacyContext) {
                 }
             }
         }
-        ensurePlayerButton()
     })
     observer.observe(document.body, { childList: true, subtree: true })
-    ensurePlayerButton()
 
     return {
         openPanel,
@@ -323,7 +285,6 @@ export function mountLegacyUi(context: LegacyContext) {
         cleanup: () => {
             closePanel()
             observer.disconnect()
-            document.querySelector('[data-test-id="STUPIDCENSOR_PLAYER_BUTTON"]')?.remove()
             offSettings()
             offJobs()
             markers()

@@ -130,7 +130,7 @@ export class GitHubClient {
             private?: boolean
             default_branch?: string
             html_url?: string
-            permissions?: { push?: boolean }
+            permissions?: { push?: boolean; admin?: boolean }
         }
         return {
             fullName: String(data.full_name || this.repo),
@@ -138,7 +138,20 @@ export class GitHubClient {
             defaultBranch: String(data.default_branch || 'main'),
             htmlUrl: String(data.html_url || `https://github.com/${this.repo}`),
             canPush: data.permissions?.push,
+            canAdmin: data.permissions?.admin === true,
         }
+    }
+
+    async getAccessInfo(): Promise<RepoInfo> {
+        const repo = await this.getRepo()
+        if (this.token) {
+            try {
+                repo.viewer = await this.getTokenLogin()
+            } catch {
+                // Repo access is still useful if the user endpoint is rate-limited.
+            }
+        }
+        return repo
     }
 
     async getWorkflow(): Promise<WorkflowInfo> {
@@ -177,7 +190,7 @@ export class GitHubClient {
     }
 
     async verifySetup(): Promise<SetupResult> {
-        const repo = await this.getRepo()
+        const repo = await this.getAccessInfo()
         if (repo.private) {
             throw new GitHubError(
                 'Репозиторий приватный. Прямые ссылки на аудио должны открываться без авторизации, поэтому нужен публичный репозиторий.',

@@ -206,7 +206,7 @@
             <p>Установка stupidCensor и настройка облачной библиотеки замен для Яндекс Музыки.</p>
             <div class="chips">
                 <span class="chip">PulseSync legacy script</span>
-                <span class="chip">версия 1.1.1</span>
+                <span class="chip">версия 1.1.2</span>
                 <span class="chip">xaunds</span>
                 <span class="chip">GitHub Releases + Actions</span>
             </div>
@@ -228,7 +228,7 @@
 
     <section id="short">
         <h2>Коротко</h2>
-        <p>Аддон добавляет в меню трека (три точки) пункты <strong>«Найти без цензуры»</strong> и <strong>«stupidCensor: открыть»</strong>, а также помечает заменённые треки значком <strong>SC</strong>. Он не хранит музыку на стороннем сервере: поиск и публикация выполняются в <strong>вашем публичном GitHub-репозитории</strong> через GitHub Actions, а готовая запись попадает в Releases.</p>
+        <p>Аддон добавляет в меню трека (три точки) пункты <strong>«Найти без цензуры»</strong> и <strong>«stupidCensor: открыть»</strong>, а также помечает заменённые треки значком <strong>SC</strong>. Он не хранит музыку на стороннем сервере: поиск и публикация выполняются в <strong>вашем публичном GitHub-репозитории</strong> через GitHub Actions, а готовая запись попадает в Releases. Добавления друзей проходят через GitHub Issues и публикуются только после подтверждения владельцем.</p>
         <div class="grid">
             <div class="card">
                 <h3>Что делает аддон</h3>
@@ -243,9 +243,9 @@
             <div class="card">
                 <h3>Что нужно понимать</h3>
                 <ul>
-                    <li>Нужен публичный репозиторий и GitHub-токен.</li>
+                    <li>Владельцу нужен публичный репозиторий и GitHub-токен. Друзьям для чтения токен не нужен; для добавления — свой токен и подтверждение владельцем.</li>
                     <li>Автопроверка не определяет цензуру: проверяйте источник.</li>
-                    <li>YouTube/SoundCloud могут блокировать IP GitHub Actions.</li>
+                    <li>YouTube/SoundCloud могут блокировать IP GitHub Actions; для YouTube можно добавить cookies.</li>
                     <li>Публикуя аудио, вы отвечаете за авторские права. Публикуйте только записи, на которые у вас есть права.</li>
                     <li>Приватный репозиторий не подойдёт.</li>
                 </ul>
@@ -257,10 +257,11 @@
         <h2>Требования</h2>
         <table>
             <tr><th>Компонент</th><th>Требование</th></tr>
-            <tr><td>PulseSync</td><td>Сборка с поддержкой WebHost-аддонов (host API 1, возможности из <code>metadata.json</code>). В старом клиенте без WebHost аддон не загрузится.</td></tr>
-            <tr><td>GitHub</td><td>Публичный репозиторий. Actions включены. Ветка по умолчанию содержит workflow.</td></tr>
-            <tr><td>Токен</td><td>Fine-grained: Contents RW, Actions RW, Metadata R. Классический: <code>repo</code> + <code>workflow</code>.</td></tr>
-            <tr><td>Файлы</td><td><code>list.json</code>, <code>.github/workflows/uncensor-cloud.yml</code>, <code>cloud/uncensor_worker.py</code>, <code>cloud/requirements.txt</code>.</td></tr>
+            <tr><td>PulseSync</td><td>Сборка с поддержкой script-аддонов (host API 1).</td></tr>
+            <tr><td>GitHub</td><td>Публичный репозиторий. Actions включены. Ветка по умолчанию содержит <code>uncensor-cloud.yml</code> и <code>uncensor-approve.yml</code>.</td></tr>
+            <tr><td>Токен владельца</td><td>Fine-grained: Contents RW, Actions RW, Metadata R. Классический: <code>repo</code> + <code>workflow</code>.</td></tr>
+            <tr><td>Токен друга</td><td>Fine-grained: Actions RW, Contents R, Metadata R. Без Contents write, иначе можно обойти проверку через сайт GitHub.</td></tr>
+            <tr><td>Файлы</td><td><code>list.json</code>, <code>.github/workflows/uncensor-cloud.yml</code>, <code>.github/workflows/uncensor-approve.yml</code>, <code>cloud/uncensor_worker.py</code>, <code>cloud/requirements.txt</code>.</td></tr>
             <tr><td>Сеть</td><td>Доступ к <code>api.github.com</code>, <code>github.com</code>, <code>raw.githubusercontent.com</code>, release-assets. GitHub Actions должен достучаться до источников; ffmpeg нужен только для публикации.</td></tr>
         </table>
         <div class="callout warn">
@@ -281,6 +282,7 @@
                 В корень репозитория положите:
                 <pre><code>list.json
 .github/workflows/uncensor-cloud.yml
+.github/workflows/uncensor-approve.yml
 cloud/uncensor_worker.py
 cloud/requirements.txt</code></pre>
                 Их можно загрузить через веб-интерфейс GitHub (<strong>Add file → Upload files</strong>) или через git:
@@ -298,11 +300,11 @@ git push -u origin main</code></pre>
             </li>
             <li>
                 <strong>Включите Actions и запись</strong>
-                Откройте вкладку <strong>Actions</strong>, разрешите workflows. Убедитесь, что в списке есть <strong>Uncensor Cloud</strong> и он активен. Затем в <strong>Settings → Actions → General → Workflow permissions</strong> выберите <strong>Read and write permissions</strong>: без этого встроенный токен не сможет обновить <code>list.json</code> и Releases.
+                Откройте вкладку <strong>Actions</strong>, разрешите workflows. Убедитесь, что в списке есть <strong>Uncensor Cloud</strong> и <strong>Uncensor Cloud Approval</strong> и оба активны. Затем в <strong>Settings → Actions → General → Workflow permissions</strong> выберите <strong>Read and write permissions</strong>: без этого встроенный токен не сможет обновить <code>list.json</code>, Releases и Issues.
             </li>
             <li>
                 <strong>Проверьте ветку</strong>
-                Workflow должен лежать в ветке по умолчанию (<code>main</code>), иначе GitHub не покажет его в списке. Аддон запускает workflow в ветке по умолчанию.
+                Оба workflow должны лежать в ветке по умолчанию (<code>main</code>), иначе GitHub не покажет их в списке, а approval workflow не сможет найти заявку. Аддон запускает задания в ветке по умолчанию.
             </li>
         </ol>
         <div class="callout">
@@ -312,7 +314,7 @@ git push -u origin main</code></pre>
     </section>
 
     <section id="token">
-        <h2>Шаг 2. GitHub-токен</h2>
+        <h2>Шаг 2. GitHub-токен владельца</h2>
         <h3>Вариант A: fine-grained token</h3>
         <ol>
             <li>Откройте <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">создание fine-grained token</a>.</li>
@@ -327,6 +329,14 @@ git push -u origin main</code></pre>
             <li><code>repo</code> — доступ к Contents и приватным данным (даже для публичного репозитория);</li>
             <li><code>workflow</code> — запуск GitHub Actions.</li>
         </ul>
+        <h3>Токен друга</h3>
+        <p>Другу не нужен токен для чтения библиотеки. Если он хочет добавлять треки, создайте отдельный fine-grained token с доступом только к этому репозиторию:</p>
+        <ul>
+            <li><code>Actions: Read and write</code> — запуск поиска и заявки.</li>
+            <li><code>Contents: Read</code> — чтение <code>list.json</code> и статусов.</li>
+            <li><code>Metadata: Read</code> — обязательный базовый доступ.</li>
+        </ul>
+        <p>Не выдавайте другу <code>Contents: Read and write</code>: такой collaborator сможет обойти проверку и изменить файлы напрямую через сайт GitHub. Заявки друзей создаются от имени GitHub Actions, поэтому <code>Issues: write</code> приложению не нужен.</p>
         <div class="callout error">
             <strong>Не публикуйте токен</strong>
             Токен хранится только в локальном хранилище аддона, если включена галочка «Хранить токен». Он не должен попадать в <code>list.json</code>, <code>jobs</code>, workflow inputs, README, скриншоты или архив. При утечке отзовите его в настройках GitHub.
@@ -375,6 +385,10 @@ git push -u origin main</code></pre>
                 Аддон проверит, что репозиторий публичный, workflow существует и активен. При успехе появится сообщение с именем репозитория и веткой.
             </li>
         </ol>
+        <div class="callout ok">
+            <strong>Друзьям токен не нужен</strong>
+            Нажмите «Подключить общую библиотеку» — аддон подключит <code>xaundz/stupidcensor-cloud</code> в режиме чтения. Друзья увидят замены владельца и смогут скрывать их только у себя. Для добавления треков нужен личный токен и доступ участника; удаление из GitHub всё равно блокируется аддоном.
+        </div>
         <table>
             <tr><th>Ошибка</th><th>Что сделать</th></tr>
             <tr><td>Репозиторий приватный</td><td>Создайте публичный репозиторий: аудио должно открываться без входа.</td></tr>
@@ -393,7 +407,7 @@ git push -u origin main</code></pre>
                     <li>Откройте меню трека → <strong>«Найти без цензуры»</strong>. Уверенное совпадение сохранится автоматически, иначе откроется панель для подтверждения.</li>
                     <li>Проверьте исполнителя, название и длительность.</li>
                     <li>При необходимости вставьте конкретную страницу YouTube/SoundCloud.</li>
-                    <li>Нажмите <strong>«Искать в облаке»</strong>.</li>
+                    <li>Нажмите <strong>«Найти замену»</strong>.</li>
                     <li>Дождитесь статуса «Кандидаты»: задание продолжится, даже если закрыть панель.</li>
                 </ol>
             </div>
@@ -402,19 +416,27 @@ git push -u origin main</code></pre>
                 <ol>
                     <li>Откройте страницу кандидата и проверьте запись.</li>
                     <li>Убедитесь, что это не кавер, не ремикс и не цензурированная копия.</li>
-                    <li>Нажмите <strong>«Сохранить»</strong>.</li>
-                    <li>Аддон скачает и перекодирует только выбранную запись.</li>
+                    <li>Нажмите <strong>«Сохранить»</strong> (владелец) или <strong>«На проверку»</strong> (друг).</li>
+                    <li>Владелец скачивает запись сразу. Заявка друга ждёт метку <code>uncensor-approved</code>.</li>
                     <li>Дождитесь статуса «Опубликовано»: библиотека обновится, замена применится.</li>
                 </ol>
             </div>
         </div>
         <h3>Ручное добавление</h3>
-        <p>Раздел «Добавить свою ссылку» принимает <strong>прямую HTTPS-ссылку на файл</strong> (m4a, mp3, aac, ogg, opus, flac, wav). Страница YouTube/SoundCloud не подойдёт. Ссылка должна быть постоянной: без <code>X-Amz-Signature</code>, <code>token</code>, <code>expires</code> и других временных параметров. Проверьте файл в браузере перед публикацией: аддон не анализирует содержимое.</p>
+        <p>Раздел «Добавить свою ссылку» принимает <strong>прямую HTTPS-ссылку на файл</strong> (m4a, mp3, aac, ogg, opus, flac, wav). Страница YouTube/SoundCloud не подойдёт. Ссылка должна быть постоянной: без <code>X-Amz-Signature</code>, <code>token</code>, <code>expires</code> и других временных параметров. Проверьте файл в браузере перед публикацией: аддон не анализирует содержимое. У друга ссылка тоже попадает в заявку и публикуется только после подтверждения владельцем.</p>
+        <h3>Заявки друзей</h3>
+        <p>Друг с токеном добавляет трек так же, как владелец, но worker не скачивает аудио. Вместо этого он создаёт Issue с меткой <code>uncensor-request</code> и файл <code>submissions/&lt;job_id&gt;.json</code>. Владелец открывает «Заявки» в настройках аддона или Issues репозитория и ставит одну из меток:</p>
+        <ul>
+            <li><code>uncensor-approved</code> — worker скачивает запись, обновляет <code>list.json</code>, удаляет submission, комментирует и закрывает Issue.</li>
+            <li><code>uncensor-rejected</code> — worker удаляет submission и закрывает Issue без публикации.</li>
+        </ul>
+        <p>Метки создаются автоматически при первой заявке. Повторное подтверждение после ошибки: снимите и снова добавьте <code>uncensor-approved</code>. Отклонять и подтверждать может только владелец репозитория; остальные получат отказ.</p>
         <h3>Библиотека и задания</h3>
         <ul>
             <li><strong>Библиотека</strong> — все записи из <code>list.json</code>; можно включить, выключить, открыть трек или скрыть связь.</li>
-            <li><strong>Задания</strong> — статусы поиска, публикации, переключения и удаления. Ссылка Actions ведёт в журнал.</li>
-            <li><strong>Удалить</strong> скрывает связь в индексе. Аудиофайл в Releases остаётся доступным.</li>
+            <li><strong>Задания</strong> — статусы поиска, публикации, переключения, удаления и заявок («На проверке»). Журнал Actions и кнопка «Заявки» видны владельцу.</li>
+            <li><strong>Массовый поиск</strong> — запускает поиск для треков текущей очереди, до 10 за раз.</li>
+            <li><strong>Удалить</strong> (владелец) убирает связь из индекса и аудиофайлы трека из Releases. Остальные могут только скрыть замену у себя.</li>
             <li>Текущий трек можно перезапустить, если подмена не слышна сразу.</li>
         </ul>
         <div class="callout ok">
@@ -429,6 +451,7 @@ git push -u origin main</code></pre>
             <tr><th>Объект</th><th>Назначение</th><th>Публичность</th></tr>
             <tr><td><code>list.json</code></td><td>Индекс замен: ID трека, ссылка и источник. Один файл на трек.</td><td>Публичный</td></tr>
             <tr><td><code>jobs/&lt;job_id&gt;.json</code></td><td>Статус задания, кандидаты, ошибка, ссылка на Actions.</td><td>Публичный</td></tr>
+            <tr><td><code>submissions/&lt;job_id&gt;.json</code></td><td>Данные заявки друга: трек, кандидат, Issue. Удаляется после публикации или отклонения.</td><td>Публичный</td></tr>
             <tr><td>Релиз <code>library</code></td><td>Постоянные файлы, на которые ссылается индекс.</td><td>Публичный</td></tr>
             <tr><td>Токен</td><td>Локальное хранилище аддона.</td><td>Не публикуется</td></tr>
         </table>
@@ -468,15 +491,19 @@ git push -u origin main</code></pre>
         <h2>Если что-то не работает</h2>
         <details>
             <summary>Кандидаты не найдены</summary>
-            <p>Измените название/исполнителя, уберите лишние слова, укажите длительность или конкретную страницу YouTube/SoundCloud. Проверьте журнал Actions: возможно, источник ответил 403 или потребовал вход. IP GitHub Actions часто блокируется YouTube.</p>
+            <p>Измените название/исполнителя, уберите лишние слова, укажите длительность или конкретную страницу YouTube/SoundCloud. Проверьте журнал Actions: возможно, источник ответил 403 или потребовал вход. IP GitHub Actions часто блокируется YouTube. Для YouTube добавьте секрет <code>YTDLP_COOKIES</code> (Netscape cookies). SoundCloud-треки с DRM скачать нельзя — аддон помечает их как недоступные.</p>
         </details>
         <details>
             <summary>Задание зависло в очереди</summary>
-            <p>Откройте вкладку Actions в репозитории. Workflow может ждать свободный runner или не запускаться из-за отключённых Actions. Аддон через ~20 секунд попробует найти запуск, а через 2 минуты без запуска покажет ошибку. Через 30 минут задание считается истёкшим. Зависшее задание можно отменить во вкладке «Задания».</p>
+            <p>Откройте вкладку Actions в репозитории. Workflow может ждать свободный runner или не запускаться из-за отключённых Actions. Аддон через ~20 секунд попробует найти запуск, а через 2 минуты без запуска покажет ошибку. Через 45 минут задание считается истёкшим. Зависшее задание можно отменить во вкладке «Задания».</p>
         </details>
         <details>
             <summary>Ошибка 403 или «исчерпан лимит»</summary>
             <p>Проверьте права токена: Contents Read and write, Actions Read and write. Для классического token — <code>repo</code> и <code>workflow</code>. Лимит GitHub API сбрасывается через час; подождите или используйте другой токен.</p>
+        </details>
+        <details>
+            <summary>Заявка друга не публикуется</summary>
+            <p>Проверьте, что Issue открыт, содержит метку <code>uncensor-request</code> и что метку <code>uncensor-approved</code> поставил именно владелец репозитория. Approval workflow должен быть в ветке по умолчанию и включён во вкладке Actions. Если публикация упала, в Issue появится комментарий с ошибкой; исправьте причину, снимите и снова добавьте <code>uncensor-approved</code>.</p>
         </details>
         <details>
             <summary>Подмена не слышна</summary>
@@ -503,19 +530,20 @@ git push -u origin main</code></pre>
             Аддон сравнивает название, исполнителя и длительность. Он не анализирует текст, не находит вырезанные фрагменты и не гарантирует, что запись не является кавером, ремиксом или другой версией. Финальное решение — за пользователем.
         </div>
         <ul>
-            <li>Источники YouTube/SoundCloud могут быть недоступны с IP GitHub Actions или требовать cookies/вход. Это внешнее ограничение, а не ошибка аддона.</li>
+            <li>Источники YouTube/SoundCloud могут быть недоступны с IP GitHub Actions или требовать cookies/вход. Для YouTube можно добавить секрет <code>YTDLP_COOKIES</code>. SoundCloud с DRM не скачивается — это внешнее ограничение, а не ошибка аддона.</li>
             <li>Поиск не скачивает аудио. Файл скачивается и перекодируется в M4A/AAC 160 kbps только после подтверждения; качество зависит от источника.</li>
             <li>GitHub Releases и Actions имеют лимиты аккаунта. Большие библиотеки требуют места.</li>
             <li>Публичный репозиторий означает публичные ссылки и имена файлов. Не добавляйте токены и личные данные в публичные файлы.</li>
             <li>Публикуйте только записи, на которые у вас есть права. Аддон не проверяет авторские права и правила GitHub.</li>
             <li>Аддон не обходит DRM, авторизацию, платный доступ или технические ограничения сервисов.</li>
+            <li>Запрет удаления действует внутри аддона и worker. Collaborator с правом Contents write всё ещё может удалить файл или обойти approval через сайт GitHub; не выдавайте друзьям такой доступ.</li>
             <li>Ответственность за загруженные аудиофайлы и соблюдение авторских прав несёт владелец репозитория.</li>
             <li>Токен в локальном хранилище аддона может быть доступен другим процессам с доступом к профилю PulseSync. Используйте отдельный токен с минимальными правами и сроком действия.</li>
         </ul>
     </section>
 
     <div class="footer">
-        <span>stupidCensor 1.1.1 · xaunds</span>
+        <span>stupidCensor 1.1.2 · xaunds</span>
         <span>PulseSync Addon Development License 1.1 · <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">токен</a> · <a href="https://github.com/new" target="_blank" rel="noreferrer">репозиторий</a></span>
     </div>
 </div>

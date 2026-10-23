@@ -47,6 +47,7 @@
 
 .uc-header {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
@@ -55,6 +56,7 @@
 
 .uc-brand {
     display: flex;
+    flex: 1 1 240px;
     align-items: center;
     gap: 12px;
     min-width: 0;
@@ -91,8 +93,10 @@
 
 .uc-header-actions {
     display: flex;
+    flex: 0 0 auto;
     align-items: center;
     gap: 10px;
+    margin-left: auto;
 }
 
 .uc-conn {
@@ -137,18 +141,20 @@
 
 .uc-tabs {
     display: flex;
+    flex-wrap: wrap;
     gap: 3px;
     margin: 0 22px 12px;
     padding: 3px;
     background: var(--uc-bg-soft);
     border: 1px solid var(--uc-line);
     border-radius: 11px;
-    overflow-x: auto;
+    overflow: visible;
 }
 
 .uc-tab {
     position: relative;
-    flex: 1 1 auto;
+    flex: 1 1 0;
+    min-width: 0;
     border: 0;
     background: transparent;
     color: var(--uc-muted);
@@ -251,6 +257,7 @@
 
 .uc-section-head {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: flex-start;
     gap: 12px;
@@ -439,6 +446,7 @@
 
 .uc-row-actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 8px;
     margin-top: 10px;
@@ -1001,11 +1009,16 @@
     }
 
     .uc-tabs {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
         margin: 0 14px 10px;
+        overflow: visible;
     }
 
     .uc-tab {
-        flex: 0 0 auto;
+        flex: initial;
+        white-space: normal;
+        padding: 8px 6px;
     }
 
     .uc-body {

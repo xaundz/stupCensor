@@ -39,6 +39,13 @@ LIBRARY_TAG = "library"
 PREVIEWS_TAG = "previews"
 INDEX_FILE = "list.json"
 JOBS_DIR = "jobs"
+SUBMISSIONS_DIR = "submissions"
+APPROVAL_LABELS = {
+    "request": ("uncensor-request", "fbca04", "Заявка на добавление записи в общую библиотеку"),
+    "approved": ("uncensor-approved", "0e8a16", "Владелец разрешил публикацию заявки"),
+    "rejected": ("uncensor-rejected", "d73a4a", "Владелец отклонил заявку"),
+    "published": ("uncensor-published", "5319e7", "Заявка опубликована в библиотеке"),
+}
 AUDIO_LIMIT_BYTES = 300 * 1024 * 1024
 JOB_ETA_SECONDS = {
     "search": 40,
@@ -46,9 +53,11 @@ JOB_ETA_SECONDS = {
     "manual": 55,
     "toggle": 6,
     "remove": 6,
+    "reject": 6,
 }
 DOWNLOAD_TIMEOUT = (20, 120)
 USER_AGENT = "UncensorCloud/1.0 (+https://github.com/)"
+YTDLP_COOKIE_FILE = Path(tempfile.gettempdir()) / "uncensor-ytdlp-cookies.txt"
 
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,80}$")
 CANDIDATE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
@@ -418,6 +427,68 @@ class GitHubAPI:
             raise WorkerError("github_file", f"Не удалось скачать {path} по публичной ссылке.")
         return fallback.text, sha
 
+    def delete_file(self, path: str, message: str) -> bool:
+        _, sha = self.get_file(path)
+        if not sha:
+            return False
+        response = self.session.delete(
+            self._url(f"/contents/{quote(path, safe='/')}"),
+            json={"message": message, "sha": sha, "branch": self.branch},
+            timeout=30,
+        )
+        if not response.ok and response.status_code != 404:
+            raise self._error(response, f"Не удалось удалить {path}")
+        return response.ok
+
+    def create_issue(self, title: str, body: str, labels: list[str]) -> dict[str, Any]:
+        response = self.session.post(
+            self._url("/issues"),
+            json={"title": title, "body": body, "labels": labels},
+            timeout=30,
+        )
+        if not response.ok:
+            raise self._error(response, "Не удалось создать заявку на проверку")
+        payload = response.json()
+        if not isinstance(payload, dict) or not payload.get("number"):
+            raise WorkerError("github_issue", "GitHub не вернул номер заявки.")
+        return payload
+
+    def comment_issue(self, number: int, body: str) -> None:
+        response = self.session.post(
+            self._url(f"/issues/{number}/comments"),
+            json={"body": body},
+            timeout=30,
+        )
+        if not response.ok:
+            raise self._error(response, f"Не удалось прокомментировать заявку #{number}")
+
+    def close_issue(self, number: int, state_reason: str = "completed") -> None:
+        response = self.session.patch(
+            self._url(f"/issues/{number}"),
+            json={"state": "closed", "state_reason": state_reason},
+            timeout=30,
+        )
+        if not response.ok:
+            raise self._error(response, f"Не удалось закрыть заявку #{number}")
+
+    def add_labels(self, number: int, labels: list[str]) -> None:
+        response = self.session.post(
+            self._url(f"/issues/{number}/labels"),
+            json={"labels": labels},
+            timeout=30,
+        )
+        if not response.ok:
+            raise self._error(response, f"Не удалось обновить метки заявки #{number}")
+
+    def ensure_label(self, name: str, color: str, description: str) -> None:
+        response = self.session.post(
+            self._url("/labels"),
+            json={"name": name, "color": color, "description": description},
+            timeout=30,
+        )
+        if not response.ok and response.status_code != 422:
+            raise self._error(response, f"Не удалось создать метку {name}")
+
     def put_file(self, path: str, text: str, message: str, sha: str | None = None) -> None:
         payload: dict[str, Any] = {
             "message": message,
@@ -684,6 +755,27 @@ def yt_dlp_module() -> Any:
     return yt_dlp
 
 
+def yt_dlp_auth_options() -> dict[str, Any]:
+    options: dict[str, Any] = {}
+    cookies = env("YTDLP_COOKIES").strip()
+    if cookies:
+        if cookies.startswith("base64:"):
+            try:
+                cookies = base64.b64decode(cookies[7:]).decode("utf-8")
+            except Exception as error:
+                raise WorkerError("cookies_invalid", "Секрет YTDLP_COOKIES не удалось декодировать из base64.", str(error)) from error
+        YTDLP_COOKIE_FILE.write_text(cookies.rstrip() + "\n", encoding="utf-8")
+        try:
+            YTDLP_COOKIE_FILE.chmod(0o600)
+        except OSError:
+            pass
+        options["cookiefile"] = str(YTDLP_COOKIE_FILE)
+    proxy = env("YTDLP_PROXY").strip()
+    if proxy:
+        options["proxy"] = proxy
+    return options
+
+
 def base_ydl_options() -> dict[str, Any]:
     return {
         "quiet": True,
@@ -697,7 +789,7 @@ def base_ydl_options() -> dict[str, Any]:
         "cachedir": False,
         "max_filesize": AUDIO_LIMIT_BYTES,
         "format": "bestaudio/best",
-        "http_headers": {"User-Agent": USER_AGENT},
+        **yt_dlp_auth_options(),
     }
 
 
@@ -767,6 +859,45 @@ def extract_single_page(page_url: str) -> dict[str, Any]:
     return info
 
 
+def classify_source_error(error: Exception) -> WorkerError:
+    detail = truncate_text(error, 1500)
+    low = detail.casefold()
+    if "drm protected" in low or ("drm" in low and "protected" in low):
+        return WorkerError(
+            "source_drm",
+            "Источник защищён DRM и не может быть скачан. Выберите другую запись.",
+            detail,
+        )
+    if "sign in to confirm" in low or "not a bot" in low or "cookies" in low and "youtube" in low:
+        return WorkerError(
+            "youtube_auth",
+            "YouTube требует вход с IP GitHub Actions. Добавьте cookies в секрет YTDLP_COOKIES или выберите SoundCloud.",
+            detail,
+        )
+    if "video unavailable" in low or "this video is unavailable" in low or "private video" in low:
+        return WorkerError("source_unavailable", "Источник больше недоступен. Выберите другую запись.", detail)
+    return WorkerError("download_failed", "Не удалось скачать аудио из источника.", detail)
+
+
+def probe_candidate_availability(page_url: str, provider: str) -> str:
+    if provider != "soundcloud":
+        return ""
+    try:
+        info = extract_single_page(page_url)
+    except WorkerError as error:
+        haystack = f"{error.message} {error.detail}".casefold()
+        if "drm" in haystack and "protected" in haystack:
+            return "DRM-защита: SoundCloud не отдаёт этот трек для скачивания"
+        return ""
+    if info.get("_has_drm") is True or info.get("has_drm") is True:
+        return "DRM-защита: SoundCloud не отдаёт этот трек для скачивания"
+    formats = info.get("formats")
+    if isinstance(formats, list) and formats:
+        if all(isinstance(item, dict) and item.get("has_drm") is True for item in formats):
+            return "DRM-защита: SoundCloud не отдаёт этот трек для скачивания"
+    return ""
+
+
 def download_and_transcode(page_url: str, work_dir: Path) -> tuple[Path, float, dict[str, Any]]:
     yt_dlp = yt_dlp_module()
     target_dir = Path(tempfile.mkdtemp(prefix="source-", dir=work_dir))
@@ -781,7 +912,7 @@ def download_and_transcode(page_url: str, work_dir: Path) -> tuple[Path, float, 
             info = ydl.extract_info(page_url, download=True)
     except Exception as error:
         shutil.rmtree(target_dir, ignore_errors=True)
-        raise WorkerError("download_failed", "Не удалось скачать аудио из источника.", truncate_text(error, 1500)) from error
+        raise classify_source_error(error) from error
     if not isinstance(info, dict):
         shutil.rmtree(target_dir, ignore_errors=True)
         raise WorkerError("download_failed", "Источник не вернул данные после скачивания.")
@@ -924,6 +1055,11 @@ def handle_search(github: GitHubAPI, job: JobStatus) -> None:
         ),
         reverse=True,
     )
+    for candidate in candidates[:8]:
+        reason = probe_candidate_availability(str(candidate.get("pageUrl") or ""), str(candidate.get("provider") or ""))
+        if reason:
+            candidate["unavailable"] = True
+            candidate["unavailableReason"] = reason
     if not candidates:
         raise WorkerError(
             "no_candidates",
@@ -969,6 +1105,195 @@ def build_mapping(
     return mapping
 
 
+SOURCE_FALLBACK_CODES = {
+    "source_drm",
+    "source_unavailable",
+    "youtube_auth",
+    "download_failed",
+    "duration_mismatch",
+    "audio_short",
+    "audio_long",
+    "audio_invalid",
+    "audio_empty",
+}
+FALLBACK_REJECT_WARNINGS = (
+    "кавер",
+    "перепев",
+    "ремикс",
+    "мэшап",
+    "инструментал",
+    "минус",
+    "караоке",
+    "концерт",
+    "изменён темп",
+    "обработка ии",
+)
+
+
+def fallback_candidates(source_job: dict[str, Any], selected: dict[str, Any]) -> list[dict[str, Any]]:
+    selected_id = str(selected.get("id") or "")
+    target_sec = int(source_job.get("trackDurationMs") or 0) // 1000
+    result: list[dict[str, Any]] = []
+    for item in source_job.get("candidates") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("id") or "") == selected_id:
+            continue
+        if item.get("unavailable") is True:
+            continue
+        page_url = clean_text(item.get("pageUrl"), 1000)
+        if not page_url:
+            continue
+        score = float(item.get("score") or 0)
+        if score < 0.55:
+            continue
+        duration_sec = int(item.get("durationMs") or 0) // 1000
+        if target_sec and duration_sec and abs(duration_sec - target_sec) > 10:
+            continue
+        warnings = " ".join(str(value) for value in (item.get("warnings") or [])).casefold()
+        if any(pattern in warnings for pattern in FALLBACK_REJECT_WARNINGS):
+            continue
+        result.append(item)
+    result.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
+    return result[:4]
+
+
+def current_actor() -> str:
+    return env("GITHUB_ACTOR").strip()
+
+
+def repository_owner_login() -> str:
+    owner = env("REPOSITORY_OWNER").strip()
+    if not owner:
+        owner = env("GITHUB_REPOSITORY").strip().split("/", 1)[0]
+    return owner
+
+
+def is_repository_owner() -> bool:
+    actor = current_actor().casefold()
+    owner = repository_owner_login().casefold()
+    return bool(actor and owner and actor == owner)
+
+
+def approval_issue_number(required: bool = False) -> int:
+    value = env("APPROVAL_ISSUE").strip()
+    if not value:
+        if required:
+            raise WorkerError("input_invalid", "Не передан номер заявки.")
+        return 0
+    if not value.isdigit():
+        raise WorkerError("input_invalid", "Некорректный номер заявки.")
+    return int(value)
+
+
+def submission_path(job_id: str) -> str:
+    return f"{SUBMISSIONS_DIR}/{job_id}.json"
+
+
+def ensure_approval_labels(github: GitHubAPI) -> None:
+    for name, color, description in APPROVAL_LABELS.values():
+        github.ensure_label(name, color, description)
+
+
+def create_submission(
+    github: GitHubAPI,
+    job: JobStatus,
+    action: str,
+    details: dict[str, Any],
+) -> None:
+    payload: dict[str, Any] = {
+        "schema": 1,
+        "action": action,
+        "jobId": job.job_id,
+        "trackId": job.track_id,
+        "trackTitle": job.track_title,
+        "trackArtist": job.track_artist,
+        "trackDurationMs": job.track_duration_ms,
+        "requestedBy": current_actor(),
+        "requestedAt": iso_now(),
+        **details,
+    }
+    ensure_approval_labels(github)
+    source_line = clean_text(details.get("sourceUrl"), 1000) or "не указан"
+    candidate_line = clean_text(details.get("candidateTitle"), 300) or "ручная ссылка"
+    issue = github.create_issue(
+        f"[Uncensor] {action}: {job.track_artist or 'Неизвестный исполнитель'} — {job.track_title or job.track_id}",
+        "\n".join(
+            [
+                "## Заявка на добавление записи",
+                "",
+                f"**Трек:** {job.track_artist or '—'} — {job.track_title or job.track_id}",
+                f"**Кто просит:** @{current_actor() or 'unknown'}",
+                f"**Действие:** `{action}`",
+                f"**Кандидат:** {candidate_line}",
+                f"**Источник:** {source_line}",
+                f"**Задание:** `{job.job_id}`",
+                f"**Workflow:** {job.run_url or '—'}",
+                "",
+                f"Владелец: добавьте метку `{APPROVAL_LABELS['approved'][0]}`, чтобы опубликовать запись, "
+                f"или `{APPROVAL_LABELS['rejected'][0]}`, чтобы отклонить заявку.",
+                "",
+                f"Данные заявки хранятся в `{submission_path(job.job_id)}`. Не редактируйте этот файл вручную.",
+            ]
+        ),
+        [APPROVAL_LABELS["request"][0]],
+    )
+    number = int(issue.get("number") or 0)
+    issue_url = clean_text(issue.get("html_url"), 1000) or f"https://github.com/{job.repo}/issues/{number}"
+    payload["issueNumber"] = number
+    try:
+        github.upsert_json(submission_path(job.job_id), payload, f"uncensor-cloud: request {job.job_id}")
+    except Exception as error:
+        try:
+            github.comment_issue(number, "Не удалось сохранить данные заявки. Попросите владельца отклонить её.")
+            github.close_issue(number)
+        except Exception:
+            pass
+        raise error
+    job.write(
+        "awaiting_approval",
+        issueUrl=issue_url,
+        issueNumber=number,
+        requestedBy=current_actor(),
+        note="Заявка отправлена владельцу на проверку в GitHub. Публикация начнётся после подтверждения.",
+    )
+
+
+def finalize_approval(github: GitHubAPI, job: JobStatus) -> None:
+    number = approval_issue_number()
+    if not number:
+        return
+    try:
+        github.delete_file(submission_path(job.job_id), f"uncensor-cloud: close request {job.job_id}")
+    except Exception as error:  # pragma: no cover - cleanup must not hide a successful publish
+        LOG.warning("Could not delete approved submission: %s", error)
+    try:
+        github.add_labels(number, [APPROVAL_LABELS["published"][0]])
+        github.comment_issue(
+            number,
+            f"✅ Запись опубликована в общей библиотеке.\n\n[Открыть запуск]({job.run_url or '—'})",
+        )
+        github.close_issue(number)
+    except Exception as error:  # pragma: no cover - publish already succeeded
+        LOG.warning("Could not finalize approval issue #%s: %s", number, error)
+
+
+def require_existing_replacement_permission(github: GitHubAPI, track_id: str) -> None:
+    actor = current_actor().casefold()
+    owner = repository_owner_login().casefold()
+    if not actor or not owner or actor == owner:
+        return
+    index = github.get_json(INDEX_FILE)
+    tracks = index.get("tracks") if isinstance(index, dict) else None
+    if isinstance(tracks, dict) and track_id in tracks:
+        raise WorkerError(
+            "forbidden",
+            "Существующую подмену может заменить только владелец репозитория.",
+            f"actor={actor} owner={owner} track={track_id}",
+            403,
+        )
+
+
 def handle_confirm(github: GitHubAPI, job: JobStatus) -> None:
     source_job_id = env("SOURCE_JOB_ID", required=True)
     candidate_id_value = env("CANDIDATE_ID", required=True)
@@ -992,21 +1317,78 @@ def handle_confirm(github: GitHubAPI, job: JobStatus) -> None:
     )
     if not candidate:
         raise WorkerError("candidate_missing", "Кандидат не найден в исходном задании.")
-    page_url = clean_text(candidate.get("pageUrl"), 1000)
-    if not page_url:
-        raise WorkerError("candidate_invalid", "У кандидата нет ссылки на страницу источника.")
-    validate_public_https(page_url)
+    source_url = clean_text(candidate.get("pageUrl"), 1000)
+    validate_public_https(source_url)
+    require_existing_replacement_permission(github, job.track_id)
+    if not is_repository_owner():
+        create_submission(
+            github,
+            job,
+            "confirm",
+            {
+                "sourceJobId": source_job_id,
+                "candidateId": candidate_id_value,
+                "sourceUrl": source_url,
+                "candidateTitle": clean_text(candidate.get("title"), 300),
+                "candidateProvider": clean_text(candidate.get("provider"), 40),
+            },
+        )
+        return
 
+    attempts = [candidate, *fallback_candidates(source_job, candidate)]
     work_root = Path(tempfile.mkdtemp(prefix="uncensor-confirm-"))
+    failure_notes: list[str] = []
     try:
-        output_path, duration, downloaded_info = download_and_transcode(page_url, work_root)
+        chosen: dict[str, Any] | None = None
+        output_path: Path | None = None
+        duration = 0.0
+        downloaded_info: dict[str, Any] = {}
+        skip_provider = ""
+        for index, current in enumerate(attempts):
+            page_url = clean_text(current.get("pageUrl"), 1000)
+            title = clean_text(current.get("title"), 200) or page_url
+            provider = str(current.get("provider") or "")
+            if skip_provider and provider == skip_provider:
+                continue
+            try:
+                validate_public_https(page_url)
+                if current.get("unavailable") is True:
+                    raise WorkerError(
+                        "source_unavailable",
+                        clean_text(current.get("unavailableReason"), 300) or "Этот источник помечен как недоступный.",
+                    )
+                output_path, duration, downloaded_info = download_and_transcode(page_url, work_root)
+                duration_sec = int(round(duration))
+                expected_sec = int(current.get("durationMs") or source_job.get("trackDurationMs") or 0) // 1000
+                if expected_sec and not duration_acceptable(expected_sec, duration_sec):
+                    raise WorkerError(
+                        "duration_mismatch",
+                        f"Длительность изменилась: ожидалось около {expected_sec} с, получено {duration_sec} с.",
+                    )
+                chosen = current
+                break
+            except WorkerError as error:
+                if error.code == "youtube_auth":
+                    skip_provider = "youtube"
+                remaining = [
+                    item
+                    for item in attempts[index + 1 :]
+                    if not (skip_provider and str(item.get("provider") or "") == skip_provider)
+                ]
+                if error.code not in SOURCE_FALLBACK_CODES or not remaining:
+                    if failure_notes:
+                        error.detail = truncate_text(" | ".join([*failure_notes, error.detail]), 3000)
+                    raise
+                failure_notes.append(f"{title}: {error.message}")
+                next_title = clean_text(remaining[0].get("title"), 200) or "следующий источник"
+                job.write(
+                    "running",
+                    note=f"Источник недоступен: {error.message} Пробую резервный вариант «{next_title}».",
+                )
+        if chosen is None or output_path is None:
+            raise WorkerError("download_failed", "Не удалось скачать ни один из источников.")
+
         duration_sec = int(round(duration))
-        expected_sec = int(candidate.get("durationMs") or source_job.get("trackDurationMs") or 0) // 1000
-        if expected_sec and not duration_acceptable(expected_sec, duration_sec):
-            raise WorkerError(
-                "duration_mismatch",
-                f"Длительность изменилась: ожидалось около {expected_sec} с, получено {duration_sec} с.",
-            )
         library = github.ensure_release(LIBRARY_TAG, "Uncensor Cloud — library")
         track_id = job.track_id
         final_name = f"{track_id}.m4a"
@@ -1014,20 +1396,20 @@ def handle_confirm(github: GitHubAPI, job: JobStatus) -> None:
         audio_url = str(final_asset.get("browser_download_url") or "")
         if not audio_url.startswith("https://"):
             raise WorkerError("github_upload", "GitHub не вернул ссылку на итоговый аудиофайл.")
-        title = job.track_title or clean_text(candidate.get("title") or downloaded_info.get("title"), 300)
+        title = job.track_title or clean_text(chosen.get("title") or downloaded_info.get("title"), 300)
         artist = job.track_artist or clean_text(
-            candidate.get("artist") or candidate.get("uploader") or downloaded_info.get("artist"),
+            chosen.get("artist") or chosen.get("uploader") or downloaded_info.get("artist"),
             300,
         )
         source = {
-            "provider": candidate.get("provider") if candidate.get("provider") in ("youtube", "soundcloud") else "unknown",
-            "pageUrl": page_url,
-            "title": clean_text(candidate.get("title"), 300),
-            "artist": clean_text(candidate.get("artist"), 300),
-            "uploader": clean_text(candidate.get("uploader"), 300),
+            "provider": chosen.get("provider") if chosen.get("provider") in ("youtube", "soundcloud") else "unknown",
+            "pageUrl": clean_text(chosen.get("pageUrl"), 1000),
+            "title": clean_text(chosen.get("title"), 300),
+            "artist": clean_text(chosen.get("artist"), 300),
+            "uploader": clean_text(chosen.get("uploader"), 300),
             "durationMs": duration_sec * 1000,
-            "score": float(candidate.get("score") or 0),
-            "warnings": candidate.get("warnings") if isinstance(candidate.get("warnings"), list) else [],
+            "score": float(chosen.get("score") or 0),
+            "warnings": chosen.get("warnings") if isinstance(chosen.get("warnings"), list) else [],
         }
         existing: dict[str, Any] | None = None
 
@@ -1050,19 +1432,38 @@ def handle_confirm(github: GitHubAPI, job: JobStatus) -> None:
 
         github.update_index(mutate)
         github.delete_track_assets(library, track_id, keep_name=final_name)
-        job.write(
-            "published",
-            published={"audioUrl": audio_url, "assetName": final_name},
-            candidateId=candidate_id_value,
-            sourceJobId=source_job_id,
-        )
+        fields: dict[str, Any] = {
+            "published": {"audioUrl": audio_url, "assetName": final_name},
+            "candidateId": str(chosen.get("id") or candidate_id_value),
+            "sourceJobId": source_job_id,
+        }
+        if failure_notes:
+            fields["note"] = (
+                "Основной источник не подошёл. Использован резервный: "
+                f"«{clean_text(chosen.get('title'), 200) or 'без названия'}». "
+                + " ".join(failure_notes)
+            )
+        job.write("published", **fields)
     finally:
         shutil.rmtree(work_root, ignore_errors=True)
 
 
 def handle_manual(github: GitHubAPI, job: JobStatus) -> None:
+    require_existing_replacement_permission(github, job.track_id)
     source_url = env("SOURCE_URL", required=True).strip()
     validate_public_https(source_url)
+    if not is_repository_owner():
+        create_submission(
+            github,
+            job,
+            "manual",
+            {
+                "sourceUrl": source_url,
+                "candidateTitle": job.track_title or "Ручная ссылка",
+                "candidateProvider": "manual",
+            },
+        )
+        return
     work_root = Path(tempfile.mkdtemp(prefix="uncensor-manual-"))
     download_path = work_root / "download.bin"
     output_path = work_root / "manual.m4a"
@@ -1112,7 +1513,45 @@ def handle_manual(github: GitHubAPI, job: JobStatus) -> None:
         shutil.rmtree(work_root, ignore_errors=True)
 
 
+def handle_reject(github: GitHubAPI, job: JobStatus) -> None:
+    require_repository_owner("reject")
+    number = approval_issue_number(required=True)
+    try:
+        github.delete_file(submission_path(job.job_id), f"uncensor-cloud: reject request {job.job_id}")
+    except Exception as error:  # pragma: no cover - the rejection must still be recorded
+        LOG.warning("Could not delete rejected submission: %s", error)
+    job.write(
+        "failed",
+        error={
+            "code": "rejected",
+            "message": "Заявка отклонена владельцем репозитория.",
+        },
+        note="Проверка завершена: владелец отклонил публикацию.",
+    )
+    try:
+        github.add_labels(number, [APPROVAL_LABELS["rejected"][0]])
+        github.comment_issue(number, "❌ Владелец отклонил эту заявку. Запись не опубликована.")
+        github.close_issue(number, "not_planned")
+    except Exception as error:  # pragma: no cover - status is already recorded
+        LOG.warning("Could not finalize rejected issue #%s: %s", number, error)
+
+
+def require_repository_owner(action: str) -> None:
+    if action not in ("toggle", "remove", "reject"):
+        return
+    actor = current_actor().casefold()
+    owner = repository_owner_login().casefold()
+    if not actor or not owner or actor != owner:
+        raise WorkerError(
+            "forbidden",
+            "Удалять замены, менять их для всех и проверять заявки может только владелец репозитория.",
+            f"actor={actor or 'unknown'} owner={owner or 'unknown'}",
+            403,
+        )
+
+
 def handle_toggle(github: GitHubAPI, job: JobStatus) -> None:
+    require_repository_owner("toggle")
     enabled = env("ENABLED", "true").strip().lower() in ("1", "true", "yes", "on")
     missing: list[bool] = []
 
@@ -1133,6 +1572,8 @@ def handle_toggle(github: GitHubAPI, job: JobStatus) -> None:
 
 
 def handle_remove(github: GitHubAPI, job: JobStatus) -> None:
+    require_repository_owner("remove")
+
     def mutate(index: dict[str, Any]) -> bool:
         tracks = index.setdefault("tracks", {})
         if job.track_id not in tracks:
@@ -1152,8 +1593,31 @@ def validate_inputs(action: str, job_id: str, track_id: str) -> None:
         raise WorkerError("input_invalid", "Некорректный job_id.")
     if not TRACK_ID_RE.fullmatch(track_id):
         raise WorkerError("input_invalid", "Некорректный ID трека Яндекс Музыки.")
-    if action not in ("search", "confirm", "manual", "toggle", "remove"):
+    if action not in ("search", "confirm", "manual", "toggle", "remove", "reject"):
         raise WorkerError("input_invalid", f"Неизвестное действие: {action}")
+
+
+def report_approval_failure(github: GitHubAPI, error: WorkerError) -> None:  # pragma: no cover - network path
+    number = approval_issue_number()
+    if not number:
+        return
+    try:
+        github.comment_issue(
+            number,
+            "\n".join(
+                [
+                    "❌ Не удалось опубликовать заявку.",
+                    "",
+                    f"**{error.message}**",
+                    "",
+                    f"`{clean_text(error.detail, 1200)}`" if error.detail else "",
+                    "",
+                    "Можно отклонить заявку меткой или исправить проблему и добавить метку подтверждения ещё раз.",
+                ]
+            ).strip(),
+        )
+    except Exception as comment_error:
+        LOG.warning("Could not report approval failure: %s", comment_error)
 
 
 def main() -> int:
@@ -1166,8 +1630,10 @@ def main() -> int:
     token = env("GITHUB_TOKEN", required=True).strip()
 
     job: JobStatus | None = None
+    github: GitHubAPI | None = None
     try:
         validate_inputs(action, job_id, track_id)
+        require_repository_owner(action)
         github = GitHubAPI(token, repo, branch)
         job = JobStatus(github, action, job_id, repo, branch)
         job.write("running")
@@ -1179,12 +1645,16 @@ def main() -> int:
             handle_search(github, job)
         elif action == "confirm":
             handle_confirm(github, job)
+            finalize_approval(github, job)
         elif action == "manual":
             handle_manual(github, job)
+            finalize_approval(github, job)
         elif action == "toggle":
             handle_toggle(github, job)
         elif action == "remove":
             handle_remove(github, job)
+        elif action == "reject":
+            handle_reject(github, job)
         LOG.info("Job %s completed as %s", job_id, action)
         return 0
     except WorkerError as error:
@@ -1194,6 +1664,8 @@ def main() -> int:
                 job.write("failed", error=error_payload(error))
             except Exception as write_error:  # pragma: no cover
                 LOG.error("Could not write failure status: %s", write_error)
+        if github is not None and approval_issue_number():
+            report_approval_failure(github, error)
         return 1
     except Exception as error:  # pragma: no cover - last-resort safety net
         LOG.exception("Unexpected worker error")

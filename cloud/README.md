@@ -1,12 +1,13 @@
 # Uncensor Cloud: облачная часть
 
-Эта папка и `.github/workflows/uncensor-cloud.yml` размещаются в **публичном** GitHub-репозитории пользователя. Аддон не хранит аудио у себя: он запускает workflow, читает публичный индекс и скачивает аудио только для выбранной записи.
+Эта папка и workflows `.github/workflows/uncensor-cloud.yml` + `.github/workflows/uncensor-approve.yml` размещаются в **публичном** GitHub-репозитории пользователя. Аддон не хранит аудио у себя: он запускает workflow, читает публичный индекс и скачивает аудио только для выбранной записи. Добавления друзей проходят через Issues и подтверждение владельцем.
 
 ## Состав репозитория
 
 ```text
 list.json
 .github/workflows/uncensor-cloud.yml
+.github/workflows/uncensor-approve.yml
 cloud/uncensor_worker.py
 cloud/requirements.txt
 ```
@@ -23,13 +24,15 @@ cloud/requirements.txt
 
 Если файла нет, worker создаст его при первой публикации. Но раздел «Библиотека» до этого будет пустым.
 
-## Workflow
+## Workflows
 
-Workflow `Uncensor Cloud` запускается только через `workflow_dispatch` с входными параметрами:
+### Uncensor Cloud
+
+Запускается через `workflow_dispatch` с входными параметрами:
 
 | Параметр | Назначение |
 | --- | --- |
-| `action` | `search`, `confirm`, `manual`, `toggle`, `remove` |
+| `action` | `search`, `confirm`, `manual`, `toggle`, `remove` (без `reject`) |
 | `job_id` | UUID задания, создаётся аддоном |
 | `track_id` | ID трека Яндекс Музыки |
 | `artist`, `title`, `duration` | метаданные для поиска/публикации |
@@ -37,7 +40,16 @@ Workflow `Uncensor Cloud` запускается только через `workfl
 | `source_job_id`, `candidate_id` | выбор кандидата для `confirm` |
 | `enabled` | `true`/`false` для `toggle` |
 
-Workflow использует встроенный `GITHUB_TOKEN` с `permissions: contents: write`. В настройках репозитория должно быть разрешено **Settings → Actions → General → Workflow permissions → Read and write permissions**, иначе commit и Release upload завершатся ошибкой. Пользовательский PAT нужен только аддону, чтобы запускать workflow, читать статусы и отменять запуски. Токен аддона **не передаётся** в inputs workflow.
+Workflow использует встроенный `GITHUB_TOKEN` с `permissions: contents: write` и `issues: write`. В настройках репозитория должно быть разрешено **Settings → Actions → General → Workflow permissions → Read and write permissions**, иначе commit, Release upload и создание заявок завершатся ошибкой. Пользовательский PAT нужен только аддону, чтобы запускать workflow, читать статусы и отменять запуски. Токен аддона **не передаётся** в inputs workflow.
+
+### Uncensor Cloud Approval
+
+Запускается событием `issues: labeled` для меток `uncensor-approved` и `uncensor-rejected`. Workflow проверяет, что метку поставил владелец репозитория, находит `submissions/<job_id>.json` по номеру Issue и запускает worker:
+
+- `uncensor-approved` — worker скачивает запись и публикует её, затем удаляет submission, ставит `uncensor-published`, комментирует и закрывает Issue;
+- `uncensor-rejected` — worker удаляет submission, ставит `uncensor-rejected`, комментирует и закрывает Issue без публикации.
+
+Approval workflow должен находиться в ветке по умолчанию. Метки создаются автоматически при первой заявке.
 
 Задания одного `job_id` не выполняются параллельно. Поиск и публикация разных треков могут идти одновременно.
 
@@ -57,25 +69,28 @@ Workflow использует встроенный `GITHUB_TOKEN` с `permission
 
 1. Читает `jobs/<source_job_id>.json`.
 2. Проверяет, что кандидат относится к тому же треку и ссылка всё ещё публичная.
-3. Скачивает выбранную страницу через yt-dlp и перекодирует в M4A/AAC 160 kbps.
-4. Проверяет длительность и загружает файл `<track_id>.m4a` в релиз `library`.
-5. Обновляет `list.json` и удаляет прежние версии этого трека.
-6. Записывает `jobs/<job_id>.json` со статусом `published`.
+3. Если действие запустил не владелец, создаёт Issue с меткой `uncensor-request` и `submissions/<job_id>.json`, пишет статус `awaiting_approval` и останавливается.
+4. Владелец скачивает выбранную страницу через yt-dlp и перекодирует в M4A/AAC 160 kbps.
+5. Проверяет длительность и загружает файл `<track_id>.m4a` в релиз `library`.
+6. Обновляет `list.json` и удаляет прежние версии этого трека.
+7. Записывает `jobs/<job_id>.json` со статусом `published`.
 
 ### `manual`
 
 1. Принимает только публичный HTTPS URL.
 2. Проверяет каждый редирект и запрещает локальные/служебные IP.
-3. Ограничивает размер 300 МБ, проверяет content-type.
-4. Перекодирует в M4A/AAC и публикует в `library`.
-5. Обновляет `list.json`.
+3. Если действие запустил не владелец, создаёт заявку и останавливается до подтверждения.
+4. Ограничивает размер 300 МБ, проверяет content-type.
+5. Перекодирует в M4A/AAC и публикует в `library`.
+6. Обновляет `list.json`.
 
 URL с временными подписями (`X-Amz-Signature`, `token`, `expires` и т. п.) не подходят: ссылка должна оставаться рабочей.
 
 ### `toggle` / `remove`
 
 - `toggle` меняет `enabled` у записи в `list.json`.
-- `remove` удаляет запись из `list.json`, но не удаляет аудио из Releases.
+- `remove` удаляет запись из `list.json` и аудиофайлы трека из Releases.
+- `toggle` и `remove` доступны только владельцу; friend-запросы для них отклоняются.
 
 ## Формат `list.json`
 
@@ -115,13 +130,21 @@ URL с временными подписями (`X-Amz-Signature`, `token`, `exp
 
 ## Требования к токену
 
-Fine-grained token:
+Владелец, fine-grained token:
 
 - **Contents**: Read and write
 - **Actions**: Read and write
 - **Metadata**: Read
 
 Классический token: `repo` + `workflow`.
+
+Друг для добавления записей:
+
+- **Actions**: Read and write
+- **Contents**: Read
+- **Metadata**: Read
+
+Не выдавайте другу `Contents: write`: collaborator сможет обойти approval через сайт GitHub. Issues приложению не нужен — Issue создаёт workflow встроенным `GITHUB_TOKEN`.
 
 Токен нужен для `/actions/workflows/.../dispatches`, отмены запусков, чтения `list.json`/`jobs`, а также при необходимости для закрытых API-запросов. Если сохранять токен не нужно, аддон работает в режиме чтения: библиотека доступна, новые задания не запускаются.
 
@@ -149,7 +172,8 @@ python3 -m pip install -r cloud/requirements.txt
 
 ## Отладка
 
-- `jobs/<job_id>.json` содержит `status`, `startedAt`, `etaSeconds`, `error.code`, `error.message`, `error.detail`.
+- `jobs/<job_id>.json` содержит `status`, `startedAt`, `etaSeconds`, `error.code`, `error.message`, `error.detail`, а для заявок — `issueUrl`, `issueNumber`, `requestedBy`.
+- `submissions/<job_id>.json` хранит данные заявки; файл удаляется после approve/reject.
 - Ссылка `runUrl` ведёт в журнал Actions.
 - Если файл статуса не появился, аддон через ~20 секунд ищет запуск по `run-name` и показывает ошибку workflow.
 - Ошибки `github_auth` означают нехватку прав токена или отключённые Actions.

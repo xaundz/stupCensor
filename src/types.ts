@@ -23,6 +23,8 @@ export type SourceCandidate = {
     durationMs: number
     score: number
     warnings: string[]
+    unavailable?: boolean
+    unavailableReason?: string
 }
 
 export type SourceInfo = {
@@ -58,7 +60,16 @@ export type LibraryIndex = {
     tracks: Record<string, TrackMapping>
 }
 
-export type JobStatus = 'queued' | 'running' | 'ready' | 'published' | 'failed' | 'updated' | 'removed' | 'abandoned'
+export type JobStatus =
+    | 'queued'
+    | 'running'
+    | 'ready'
+    | 'awaiting_approval'
+    | 'published'
+    | 'failed'
+    | 'updated'
+    | 'removed'
+    | 'abandoned'
 
 export type JobError = {
     code: string
@@ -88,6 +99,9 @@ export type JobRecord = {
     error?: JobError
     runUrl?: string
     runId?: number
+    issueUrl?: string
+    issueNumber?: number
+    requestedBy?: string
     startedAt?: string
     finishedAt?: string
     etaSeconds?: number
@@ -99,6 +113,7 @@ export type JobRecord = {
     needsReview?: boolean
     trackDurationMs?: number
     autoConfirmed?: boolean
+    note?: string
 }
 
 export type GitHubConfig = {
@@ -114,6 +129,8 @@ export type RepoInfo = {
     defaultBranch: string
     htmlUrl: string
     canPush?: boolean
+    canAdmin?: boolean
+    viewer?: string
 }
 
 export type WorkflowInfo = {

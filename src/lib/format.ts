@@ -119,7 +119,7 @@ export function providerLabel(provider: string | undefined): string {
     }
 }
 
-export function statusLabel(status: string | undefined): string {
+export function statusLabel(status: string | undefined, errorCode?: string): string {
     switch (status) {
         case 'queued':
             return 'В очереди'
@@ -127,10 +127,12 @@ export function statusLabel(status: string | undefined): string {
             return 'Выполняется'
         case 'ready':
             return 'Кандидаты готовы'
+        case 'awaiting_approval':
+            return 'На проверке'
         case 'published':
             return 'Опубликовано'
         case 'failed':
-            return 'Ошибка'
+            return errorCode === 'rejected' ? 'Отклонено' : 'Ошибка'
         case 'updated':
             return 'Обновлено'
         case 'removed':
