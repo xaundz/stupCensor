@@ -1,2 +1,2 @@
-yt-dlp>=2026.10.21
+yt-dlp[default]>=2026.10.21
 requests>=2.32.0,<3

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import http.cookiejar
 import ipaddress
 import json
 import logging
@@ -22,6 +23,7 @@ import sys
 import tempfile
 import time
 import unicodedata
+import warnings
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -74,6 +76,7 @@ YOUTUBE_CHECK_URLS = (
 DOWNLOAD_TIMEOUT = (20, 120)
 USER_AGENT = "UncensorCloud/1.0 (+https://github.com/)"
 YTDLP_COOKIE_FILE = Path(tempfile.gettempdir()) / "uncensor-ytdlp-cookies.txt"
+_YTDLP_COOKIE_FILES: dict[tuple[str, str], str] = {}
 
 JOB_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{7,80}$")
 CANDIDATE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")
@@ -786,28 +789,39 @@ def yt_dlp_module() -> Any:
     return yt_dlp
 
 
-def yt_dlp_auth_options() -> dict[str, Any]:
+def yt_dlp_auth_options(url_or_provider: str = "") -> dict[str, Any]:
     options: dict[str, Any] = {}
-    cookies = env("YTDLP_COOKIES").strip()
+    is_youtube = url_or_provider == "youtube" or provider_for_url(url_or_provider) == "youtube"
+    cookies = env("YTDLP_COOKIES") if is_youtube else ""
     if cookies:
-        if cookies.startswith("base64:"):
+        key = (str(YTDLP_COOKIE_FILE), hashlib.sha256(cookies.encode("utf-8")).hexdigest())
+        if key not in _YTDLP_COOKIE_FILES:
+            cookie_path = ""
             try:
-                cookies = base64.b64decode(cookies[7:]).decode("utf-8")
-            except Exception as error:
-                raise WorkerError("cookies_invalid", "Секрет YTDLP_COOKIES не удалось декодировать из base64.", str(error)) from error
-        YTDLP_COOKIE_FILE.write_text(cookies.rstrip() + "\n", encoding="utf-8")
-        try:
-            YTDLP_COOKIE_FILE.chmod(0o600)
-        except OSError:
-            pass
-        options["cookiefile"] = str(YTDLP_COOKIE_FILE)
+                if cookies.startswith("base64:"):
+                    cookies = base64.b64decode("".join(cookies[7:].split()), validate=True).decode("utf-8")
+                fd, cookie_path = tempfile.mkstemp(
+                    prefix=YTDLP_COOKIE_FILE.stem + "-", suffix=".txt", dir=YTDLP_COOKIE_FILE.parent,
+                )
+                with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+                    handle.write(cookies if cookies.endswith("\n") else cookies + "\n")
+                # CookieJar errors can contain cookie lines; never expose their details.
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    http.cookiejar.MozillaCookieJar(cookie_path).load(ignore_discard=True, ignore_expires=True)
+            except Exception:
+                if cookie_path:
+                    Path(cookie_path).unlink(missing_ok=True)
+                raise WorkerError("cookies_invalid", "Секрет YTDLP_COOKIES должен содержать cookies в формате Netscape или base64:.") from None
+            _YTDLP_COOKIE_FILES[key] = cookie_path
+        options["cookiefile"] = _YTDLP_COOKIE_FILES[key]
     proxy = env("YTDLP_PROXY").strip()
     if proxy:
         options["proxy"] = proxy
     return options
 
 
-def base_ydl_options() -> dict[str, Any]:
+def base_ydl_options(url_or_provider: str = "") -> dict[str, Any]:
     return {
         "quiet": True,
         "no_warnings": True,
@@ -818,9 +832,10 @@ def base_ydl_options() -> dict[str, Any]:
         "fragment_retries": 2,
         "extractor_retries": 2,
         "cachedir": False,
+        "js_runtimes": {"node": {}},
         "max_filesize": AUDIO_LIMIT_BYTES,
         "format": "bestaudio/best",
-        **yt_dlp_auth_options(),
+        **yt_dlp_auth_options(url_or_provider),
     }
 
 
@@ -920,7 +935,7 @@ def search_entries(provider: str, query: str) -> list[dict[str, Any]]:
     yt_dlp = yt_dlp_module()
     prefix = "ytsearch20" if provider == "youtube" else "scsearch15"
     options = {
-        **base_ydl_options(),
+        **base_ydl_options(provider),
         "extract_flat": "in_playlist",
         "skip_download": True,
     }
@@ -967,8 +982,10 @@ def search_entries(provider: str, query: str) -> list[dict[str, Any]]:
 def extract_single_page(page_url: str) -> dict[str, Any]:
     yt_dlp = yt_dlp_module()
     try:
-        with yt_dlp.YoutubeDL({**base_ydl_options(), "skip_download": True}) as ydl:
+        with yt_dlp.YoutubeDL({**base_ydl_options(page_url), "skip_download": True}) as ydl:
             info = ydl.extract_info(page_url, download=False)
+    except WorkerError:
+        raise
     except Exception as error:
         raise WorkerError("source_extract_failed", "Не удалось прочитать указанную страницу источника.", truncate_text(error, 1200)) from error
     if not isinstance(info, dict):
@@ -1023,9 +1040,10 @@ def probe_candidate_availability(page_url: str, provider: str) -> str:
 
 def download_and_transcode(page_url: str, work_dir: Path) -> tuple[Path, float, dict[str, Any]]:
     yt_dlp = yt_dlp_module()
+    options = base_ydl_options(page_url)
     target_dir = Path(tempfile.mkdtemp(prefix="source-", dir=work_dir))
     options = {
-        **base_ydl_options(),
+        **options,
         "outtmpl": str(target_dir / "source.%(ext)s"),
         "overwrites": True,
         "concurrent_fragment_downloads": 4,
@@ -1033,6 +1051,9 @@ def download_and_transcode(page_url: str, work_dir: Path) -> tuple[Path, float, 
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
             info = ydl.extract_info(page_url, download=True)
+    except WorkerError:
+        shutil.rmtree(target_dir, ignore_errors=True)
+        raise
     except Exception as error:
         shutil.rmtree(target_dir, ignore_errors=True)
         raise classify_source_error(error) from error
@@ -1055,9 +1076,14 @@ def download_and_transcode(page_url: str, work_dir: Path) -> tuple[Path, float, 
     if downloaded is None:
         shutil.rmtree(target_dir, ignore_errors=True)
         raise WorkerError("download_failed", "yt-dlp не создал аудиофайл.")
-    output = target_dir / "source.m4a"
+    output = target_dir / "transcoded.m4a"
     try:
         duration = transcode_to_m4a(downloaded, output)
+    except WorkerError as error:
+        shutil.rmtree(target_dir, ignore_errors=True)
+        if error.code in ("tool_failed", "tool_timeout"):
+            raise WorkerError("audio_invalid", "Не удалось декодировать или проверить скачанное аудио.", error.detail) from error
+        raise
     except Exception:
         shutil.rmtree(target_dir, ignore_errors=True)
         raise
@@ -1233,6 +1259,7 @@ SOURCE_FALLBACK_CODES = {
     "source_drm",
     "source_unavailable",
     "youtube_auth",
+    "cookies_invalid",
     "download_failed",
     "duration_mismatch",
     "audio_short",
@@ -1279,7 +1306,7 @@ def fallback_candidates(source_job: dict[str, Any], selected: dict[str, Any]) ->
             continue
         result.append(item)
     result.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
-    return result[:4]
+    return result
 
 
 def current_actor() -> str:
@@ -1468,6 +1495,7 @@ def handle_confirm(github: GitHubAPI, job: JobStatus) -> None:
         duration = 0.0
         downloaded_info: dict[str, Any] = {}
         skip_provider = ""
+        download_attempts = 0
         for index, current in enumerate(attempts):
             page_url = clean_text(current.get("pageUrl"), 1000)
             title = clean_text(current.get("title"), 200) or page_url
@@ -1485,6 +1513,7 @@ def handle_confirm(github: GitHubAPI, job: JobStatus) -> None:
                     reason = probe_candidate_availability(page_url, provider)
                     if reason:
                         raise WorkerError("source_unavailable", reason)
+                download_attempts += 1
                 output_path, duration, downloaded_info = download_and_transcode(page_url, work_root)
                 duration_sec = int(round(duration))
                 expected_sec = int(current.get("durationMs") or source_job.get("trackDurationMs") or 0) // 1000
@@ -1496,14 +1525,14 @@ def handle_confirm(github: GitHubAPI, job: JobStatus) -> None:
                 chosen = current
                 break
             except WorkerError as error:
-                if error.code == "youtube_auth":
+                if error.code in ("youtube_auth", "cookies_invalid"):
                     skip_provider = "youtube"
                 remaining = [
                     item
                     for item in attempts[index + 1 :]
                     if not (skip_provider and str(item.get("provider") or "") == skip_provider)
                 ]
-                if error.code not in SOURCE_FALLBACK_CODES or not remaining:
+                if error.code not in SOURCE_FALLBACK_CODES or not remaining or download_attempts >= 5:
                     if failure_notes:
                         error.detail = truncate_text(" | ".join([*failure_notes, error.detail]), 3000)
                     raise
@@ -1583,7 +1612,7 @@ def handle_check(github: GitHubAPI, job: JobStatus) -> None:  # pragma: no cover
     for url in YOUTUBE_CHECK_URLS:
         try:
             yt_dlp = yt_dlp_module()
-            with yt_dlp.YoutubeDL({**base_ydl_options(), "skip_download": True}) as ydl:
+            with yt_dlp.YoutubeDL({**base_ydl_options(url), "skip_download": True}) as ydl:
                 info = ydl.extract_info(url, download=False)
             if isinstance(info, dict) and info.get("id"):
                 mode = "cookies" if cookies else "proxy" if proxy else "без cookies"
@@ -1861,4 +1890,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    finally:
+        for cookie_path in _YTDLP_COOKIE_FILES.values():
+            Path(cookie_path).unlink(missing_ok=True)

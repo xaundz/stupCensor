@@ -1,3 +1,5 @@
+import base64
+import http.cookiejar
 import os
 import sys
 import tempfile
@@ -104,14 +106,14 @@ class SourceErrorTests(unittest.TestCase):
         result = worker.fallback_candidates(source, selected)
         self.assertEqual([item["id"] for item in result], ["good"])
 
-    def test_fallback_returns_up_to_four_candidates(self):
+    def test_fallback_preserves_all_eligible_candidates(self):
         candidates = [
             {"id": f"c{index}", "pageUrl": f"https://soundcloud.com/a/{index}", "durationMs": 245000, "score": 0.9 - index / 100, "warnings": []}
             for index in range(6)
         ]
         source = {"trackDurationMs": 245000, "candidates": candidates}
         result = worker.fallback_candidates(source, candidates[0])
-        self.assertEqual([item["id"] for item in result], ["c1", "c2", "c3", "c4"])
+        self.assertEqual([item["id"] for item in result], ["c1", "c2", "c3", "c4", "c5"])
 
 
 class PermissionTests(unittest.TestCase):
@@ -173,6 +175,101 @@ class FakeYoutubeDL:
 
 class FakeYoutubeModule:
     YoutubeDL = FakeYoutubeDL
+
+
+class CookieTests(unittest.TestCase):
+    COOKIES = "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2147483647\tempty\t"
+
+    def test_cookie_tabs_permissions_and_no_rewrite(self):
+        for encoded in (False, True, "wrapped"):
+            with self.subTest(encoded=encoded), tempfile.TemporaryDirectory() as directory:
+                value = "base64:" + base64.b64encode(self.COOKIES.encode()).decode() if encoded else self.COOKIES
+                if encoded == "wrapped":
+                    value = value[:20] + "\n" + value[20:] + "\n"
+                with patch.dict(os.environ, {"YTDLP_COOKIES": value}, clear=True), \
+                        patch.object(worker, "YTDLP_COOKIE_FILE", Path(directory) / "cookies.txt"), \
+                        patch.object(worker, "_YTDLP_COOKIE_FILES", {}):
+                    options = worker.base_ydl_options("youtube")
+                    path = Path(options["cookiefile"])
+                    self.assertEqual(path.read_text(), self.COOKIES + "\n")
+                    self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                    jar = http.cookiejar.MozillaCookieJar(str(path))
+                    jar.load(ignore_discard=True, ignore_expires=True)
+                    self.assertEqual([(cookie.name, cookie.value) for cookie in jar], [("empty", "")])
+                    path.write_text(self.COOKIES + "\n# updated by yt-dlp\n")
+                    self.assertEqual(worker.base_ydl_options("https://youtu.be/test")["cookiefile"], str(path))
+                    self.assertTrue(path.read_text().endswith("# updated by yt-dlp\n"))
+                    self.assertNotIn("cookiefile", worker.base_ydl_options("soundcloud"))
+
+    def test_invalid_cookies_are_scoped_and_do_not_leak(self):
+        for value in ("base64:secret!", "base64:/w==", "secret-cookie-content", "# Netscape HTTP Cookie File\nsecret\tbad"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as directory, \
+                    patch.dict(os.environ, {"YTDLP_COOKIES": value}, clear=True), \
+                    patch.object(worker, "YTDLP_COOKIE_FILE", Path(directory) / "cookies.txt"), \
+                    patch.object(worker, "_YTDLP_COOKIE_FILES", {}), \
+                    patch("uncensor_worker.yt_dlp_module", return_value=FakeYoutubeModule()):
+                self.assertNotIn("cookiefile", worker.base_ydl_options("soundcloud"))
+                worker.search_entries("soundcloud", "test")
+                worker.extract_single_page("https://soundcloud.com/a/b")
+                with self.assertRaises(worker.WorkerError) as raised:
+                    worker.base_ydl_options("youtube")
+                self.assertEqual(raised.exception.code, "cookies_invalid")
+                self.assertEqual(raised.exception.detail, "")
+                self.assertNotIn(value, str(raised.exception))
+                self.assertEqual(list(Path(directory).iterdir()), [])
+
+
+class DownloadTests(unittest.TestCase):
+    def test_m4a_download_and_decode_errors(self):
+        class DownloadYoutubeDL(FakeYoutubeDL):
+            def extract_info(self, url, download=False):
+                path = Path(self.options["outtmpl"].replace("%(ext)s", "m4a"))
+                path.write_bytes(b"synthetic m4a")
+                return {"requested_downloads": [{"filepath": str(path)}]}
+
+        class Module:
+            YoutubeDL = DownloadYoutubeDL
+
+        def transcode(source, destination):
+            self.assertNotEqual(source, destination)
+            self.assertEqual(source.name, "source.m4a")
+            destination.write_bytes(b"synthetic output")
+            return 245.0
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("uncensor_worker.yt_dlp_auth_options", return_value={}), \
+                patch("uncensor_worker.yt_dlp_module", return_value=Module()):
+            with patch("uncensor_worker.transcode_to_m4a", side_effect=transcode):
+                output, duration, _ = worker.download_and_transcode("https://soundcloud.com/a/b", Path(directory))
+            self.assertEqual(output.name, "transcoded.m4a")
+            self.assertEqual(duration, 245.0)
+            for tool in ("ffmpeg", "ffprobe"):
+                for code in ("tool_failed", "tool_timeout", "tool_missing"):
+                    error = worker.WorkerError(code, tool + " failed")
+
+                    def run(command, **kwargs):
+                        if command[0] == tool:
+                            raise error
+                        Path(command[-1]).write_bytes(b"x" * 2048)
+
+                    with self.subTest(tool=tool, code=code), \
+                            patch("uncensor_worker.run_command", side_effect=run):
+                        with self.assertRaises(worker.WorkerError) as raised:
+                            worker.download_and_transcode("https://soundcloud.com/a/b", Path(directory))
+                    if code == "tool_missing":
+                        self.assertIs(raised.exception, error)
+                    else:
+                        self.assertEqual(raised.exception.code, "audio_invalid")
+                        self.assertIn(raised.exception.code, worker.SOURCE_FALLBACK_CODES)
+            self.assertEqual(list(Path(directory).iterdir()), [output.parent])
+
+    def test_extract_preserves_worker_error(self):
+        error = worker.WorkerError("cookies_invalid", "Invalid cookies")
+        with patch("uncensor_worker.yt_dlp_module", return_value=FakeYoutubeModule()), \
+                patch("uncensor_worker.yt_dlp_auth_options", side_effect=error):
+            with self.assertRaises(worker.WorkerError) as raised:
+                worker.extract_single_page("https://youtu.be/test")
+        self.assertIs(raised.exception, error)
 
 
 class CheckTests(unittest.TestCase):
@@ -444,6 +541,33 @@ class SearchMetadataTests(unittest.TestCase):
 
 
 class ConfirmTests(unittest.TestCase):
+    def test_confirm_caps_downloads_and_falls_back_on_decode_failure(self):
+        candidates = [
+            {"id": f"candidate-{index}", "provider": "soundcloud", "pageUrl": f"https://soundcloud.com/a/{index}",
+             "durationMs": 245000, "score": 0.9, "warnings": [], "probed": True}
+            for index in range(8)
+        ]
+
+        class FakeGitHub:
+            def get_json(self, path):
+                return {"status": "ready", "trackId": "123456", "trackDurationMs": 245000, "candidates": candidates}
+
+        job = FakeCheckJob()
+        job.track_id = "123456"
+        for code, count in (("audio_invalid", 5), ("tool_missing", 1)):
+            error = worker.WorkerError(code, "Synthetic failure")
+            with self.subTest(code=code), \
+                    patch.dict(os.environ, {"SOURCE_JOB_ID": "job-source-12345678", "CANDIDATE_ID": "candidate-0"}, clear=True), \
+                    patch("uncensor_worker.is_repository_owner", return_value=True), \
+                    patch("uncensor_worker.require_existing_replacement_permission"), \
+                    patch("uncensor_worker.validate_public_https"), \
+                    patch("uncensor_worker.probe_candidate_availability", return_value=""), \
+                    patch("uncensor_worker.download_and_transcode", side_effect=error) as download:
+                with self.assertRaises(worker.WorkerError) as raised:
+                    worker.handle_confirm(FakeGitHub(), job)
+            self.assertIs(raised.exception, error)
+            self.assertEqual(download.call_count, count)
+
     def test_confirm_downloads_selected_candidate_and_publishes(self):
         class FakeGitHub:
             def __init__(self):
@@ -507,6 +631,7 @@ class ConfirmTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".m4a") as output, \
                 patch.dict(os.environ, env, clear=True), \
                 patch("uncensor_worker.validate_public_https"), \
+                patch("uncensor_worker.probe_candidate_availability", return_value=""), \
                 patch("uncensor_worker.download_and_transcode", return_value=(Path(output.name), 245.0, {})) as download:
             job = worker.JobStatus(github, "confirm", "job-confirm-12345678", "owner/repo", "main")
             worker.handle_confirm(github, job)
@@ -545,15 +670,15 @@ class ConfirmTests(unittest.TestCase):
                             "score": 0.95,
                             "warnings": [],
                         },
-                        {
-                            "id": "youtube-two",
+                        *[{
+                            "id": f"youtube-{index}",
                             "provider": "youtube",
-                            "pageUrl": "https://www.youtube.com/watch?v=second",
+                            "pageUrl": f"https://www.youtube.com/watch?v=alternative{index}",
                             "title": "Кино - Группа крови (second)",
                             "durationMs": 245000,
                             "score": 0.90,
                             "warnings": [],
-                        },
+                        } for index in range(4)],
                         {
                             "id": "soundcloud-good",
                             "provider": "soundcloud",
@@ -597,6 +722,7 @@ class ConfirmTests(unittest.TestCase):
         with tempfile.NamedTemporaryFile(suffix=".m4a") as output, \
                 patch.dict(os.environ, env, clear=True), \
                 patch("uncensor_worker.validate_public_https"), \
+                patch("uncensor_worker.probe_candidate_availability", return_value=""), \
                 patch(
                     "uncensor_worker.download_and_transcode",
                     side_effect=[
