@@ -112,6 +112,16 @@ export function providerLabel(provider: string | undefined): string {
             return 'YouTube'
         case 'soundcloud':
             return 'SoundCloud'
+        case 'rutube':
+            return 'Rutube'
+        case 'dailymotion':
+            return 'Dailymotion'
+        case 'vimeo':
+            return 'Vimeo'
+        case 'bandcamp':
+            return 'Bandcamp'
+        case 'vk':
+            return 'VK'
         case 'manual':
             return 'Своя ссылка'
         default:
@@ -150,11 +160,12 @@ export function scorePercent(score: number | undefined): string {
 }
 
 const JOB_ETA_SECONDS: Record<JobRecord['action'], number> = {
-    search: 40,
+    search: 45,
     confirm: 75,
     manual: 55,
     toggle: 6,
     remove: 6,
+    check: 20,
 }
 
 export type JobTiming = {

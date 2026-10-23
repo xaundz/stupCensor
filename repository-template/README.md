@@ -27,8 +27,9 @@
 ## Важно
 
 - Автоматическая проверка не определяет цензуру. Проверяйте источник перед публикацией.
-- YouTube/SoundCloud могут блокировать IP GitHub Actions. Для YouTube добавьте секрет `YTDLP_COOKIES` с cookies в формате Netscape; SoundCloud с DRM скачать нельзя.
+- Поиск: YouTube, SoundCloud, Rutube и Dailymotion. В ручную ссылку можно вставить страницу YouTube, SoundCloud, Rutube, Dailymotion, Vimeo, Bandcamp или VK.
+- YouTube может блокировать IP GitHub Actions. Добавьте секрет `YTDLP_COOKIES` с cookies в формате Netscape или `base64:<...>`; при блокировке по IP — `YTDLP_PROXY`. Проверка доступа есть в настройках аддона. SoundCloud с DRM скачать нельзя; worker пробует резервный источник.
 - Аудио публично. Публикуя его, владелец репозитория отвечает за соблюдение авторских прав. Публикуйте только записи, на которые у вас есть права.
 - Приватный репозиторий не подходит для воспроизведения по публичным ссылкам.
 
-stupidCensor 1.1.2 · xaunds · PulseSync Addon Development License 1.1.
+stupidCensor 1.1.3 · xaunds · PulseSync Addon Development License 1.1.

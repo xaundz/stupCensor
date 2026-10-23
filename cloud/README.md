@@ -32,15 +32,21 @@ cloud/requirements.txt
 
 | Параметр | Назначение |
 | --- | --- |
-| `action` | `search`, `confirm`, `manual`, `toggle`, `remove` (без `reject`) |
+| `action` | `search`, `confirm`, `manual`, `toggle`, `remove`, `check` (без `reject`) |
 | `job_id` | UUID задания, создаётся аддоном |
 | `track_id` | ID трека Яндекс Музыки |
 | `artist`, `title`, `duration` | метаданные для поиска/публикации |
-| `source_url` | страница YouTube/SoundCloud или прямая HTTPS-ссылка |
+| `source_url` | страница YouTube, SoundCloud, Rutube, Dailymotion, Vimeo, Bandcamp, VK или прямая HTTPS-ссылка |
 | `source_job_id`, `candidate_id` | выбор кандидата для `confirm` |
 | `enabled` | `true`/`false` для `toggle` |
 
+`check` запускает только проверку YouTube и не требует `ffmpeg`. Для неё нужен секрет `YTDLP_COOKIES` (Netscape cookies или `base64:<...>`) и при необходимости `YTDLP_PROXY`; значения секретов не передаются в inputs и не попадают в логи.
+
 Workflow использует встроенный `GITHUB_TOKEN` с `permissions: contents: write` и `issues: write`. В настройках репозитория должно быть разрешено **Settings → Actions → General → Workflow permissions → Read and write permissions**, иначе commit, Release upload и создание заявок завершатся ошибкой. Пользовательский PAT нужен только аддону, чтобы запускать workflow, читать статусы и отменять запуски. Токен аддона **не передаётся** в inputs workflow.
+
+### Источники
+
+Поиск идёт по YouTube, SoundCloud, Rutube и Dailymotion. SoundCloud-кандидаты с DRM помечаются недоступными; при подтверждении worker перепроверяет старые записи и пробует резервный источник. Ручная ссылка принимает также Vimeo, Bandcamp и VK.
 
 ### Uncensor Cloud Approval
 

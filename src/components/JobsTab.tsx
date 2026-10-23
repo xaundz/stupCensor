@@ -39,6 +39,8 @@ function actionLabel(job: JobRecord): string {
             return 'Переключение'
         case 'remove':
             return 'Удаление'
+        case 'check':
+            return 'Проверка YouTube'
         default:
             return job.action
     }
@@ -59,7 +61,7 @@ export function JobsTab({ onOpenTrack }: Props) {
 
     const pending = state.jobs.filter(job => job.status === 'queued' || job.status === 'running')
     const awaiting = state.jobs.filter(job => job.status === 'awaiting_approval')
-    const ready = state.jobs.filter(job => job.status === 'ready')
+    const ready = state.jobs.filter(job => job.status === 'ready' && job.action !== 'check')
     const queueMissing = queueTracks.filter(track => {
         const mapping = state.library.tracks[track.id]
         return !mapping || !isMappingEnabled(mapping)
@@ -204,11 +206,17 @@ export function JobsTab({ onOpenTrack }: Props) {
                                             {job.trackArtist ? `${job.trackArtist} — ` : ''}
                                             {job.trackTitle || `Трек ${job.trackId}`}
                                         </div>
-                                        <span className={`uc-status-pill ${statusClass(job)}`}>{statusLabel(job.status, job.error?.code)}</span>
+                                        <span className={`uc-status-pill ${statusClass(job)}`}>
+                                            {job.action === 'check' && job.status === 'ready'
+                                                ? 'Проверка пройдена'
+                                                : statusLabel(job.status, job.error?.code)}
+                                        </span>
                                     </div>
                                     <div className="uc-muted uc-small">
                                         {actionLabel(job)} · {formatDateTime(job.createdAt)}
-                                        {job.status === 'ready' ? ` · кандидатов: ${job.candidates?.length || 0}` : ''}
+                                        {job.status === 'ready' && job.action !== 'check'
+                                            ? ` · кандидатов: ${job.candidates?.length || 0}`
+                                            : ''}
                                         {job.requestedBy ? ` · заявка от ${job.requestedBy}` : ''}
                                         {timing ? ` · ${timing.label}` : ''}
                                     </div>
@@ -234,7 +242,7 @@ export function JobsTab({ onOpenTrack }: Props) {
                                         >
                                             {job.status === 'ready' ? 'Кандидаты' : 'Открыть'}
                                         </button>
-                                    ) : job.trackId ? (
+                                    ) : job.trackId && job.action !== 'check' ? (
                                         <button type="button" className="uc-btn uc-btn-small" onClick={() => onOpenTrack(replaceableTrackFromJob(job))}>
                                             Трек
                                         </button>

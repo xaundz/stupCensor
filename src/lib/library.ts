@@ -14,9 +14,17 @@ export const EMPTY_INDEX: LibraryIndex = {
 function normalizeSource(raw: unknown): TrackMapping['source'] {
     const source = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {}
     const providerRaw = sanitizeText(source.provider, 24)
-    const provider = providerRaw === 'youtube' || providerRaw === 'soundcloud' || providerRaw === 'manual'
-        ? providerRaw
-        : 'unknown'
+    const provider =
+        providerRaw === 'youtube' ||
+        providerRaw === 'soundcloud' ||
+        providerRaw === 'rutube' ||
+        providerRaw === 'dailymotion' ||
+        providerRaw === 'vimeo' ||
+        providerRaw === 'bandcamp' ||
+        providerRaw === 'vk' ||
+        providerRaw === 'manual'
+            ? providerRaw
+            : 'unknown'
     return {
         provider,
         pageUrl: sanitizeText(source.pageUrl, 1000),

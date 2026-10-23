@@ -149,6 +149,61 @@ class PermissionTests(unittest.TestCase):
             worker.require_existing_replacement_permission(FakeGitHub(), "456")
 
 
+class FakeCheckJob:
+    def __init__(self):
+        self.writes = []
+
+    def write(self, status, **fields):
+        self.writes.append((status, fields))
+
+
+class FakeYoutubeDL:
+    def __init__(self, options):
+        self.options = options
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def extract_info(self, url, download=False):
+        return {"id": "test", "title": "test"}
+
+
+class FakeYoutubeModule:
+    YoutubeDL = FakeYoutubeDL
+
+
+class CheckTests(unittest.TestCase):
+    def test_check_reports_success(self):
+        job = FakeCheckJob()
+        with patch.dict(os.environ, {"YTDLP_COOKIES": "cookies"}, clear=True), \
+                patch("uncensor_worker.yt_dlp_auth_options", return_value={}), \
+                patch("uncensor_worker.yt_dlp_module", return_value=FakeYoutubeModule()):
+            worker.handle_check(None, job)
+        self.assertEqual(job.writes[0][0], "ready")
+        self.assertEqual(job.writes[0][1]["candidates"], [])
+        self.assertIn("cookies", job.writes[0][1]["note"])
+
+    def test_check_classifies_bot_check(self):
+        class FailingYoutubeDL(FakeYoutubeDL):
+            def extract_info(self, url, download=False):
+                raise RuntimeError("Sign in to confirm you're not a bot")
+
+        class Module:
+            YoutubeDL = FailingYoutubeDL
+
+        job = FakeCheckJob()
+        with patch.dict(os.environ, {}, clear=True), \
+                patch("uncensor_worker.yt_dlp_auth_options", return_value={}), \
+                patch("uncensor_worker.yt_dlp_module", return_value=Module()):
+            with self.assertRaises(worker.WorkerError) as raised:
+                worker.handle_check(None, job)
+        self.assertEqual(raised.exception.code, "youtube_auth")
+        self.assertIn("YTDLP_COOKIES", raised.exception.message)
+
+
 class UrlTests(unittest.TestCase):
     def test_rejects_insecure_and_local(self):
         for url in (
@@ -287,6 +342,58 @@ class MappingTests(unittest.TestCase):
         self.assertTrue(github.session.deleted[-1].endswith("/git/refs/tags/previews"))
 
 
+class ProviderTests(unittest.TestCase):
+    def test_provider_for_url(self):
+        self.assertEqual(worker.provider_for_url("https://www.youtube.com/watch?v=x"), "youtube")
+        self.assertEqual(worker.provider_for_url("https://youtu.be/x"), "youtube")
+        self.assertEqual(worker.provider_for_url("https://soundcloud.com/a/b"), "soundcloud")
+        self.assertEqual(worker.provider_for_url("https://rutube.ru/video/abc/"), "rutube")
+        self.assertEqual(worker.provider_for_url("https://www.dailymotion.com/video/x1"), "dailymotion")
+        self.assertEqual(worker.provider_for_url("https://vimeo.com/123"), "vimeo")
+        self.assertEqual(worker.provider_for_url("https://artist.bandcamp.com/track/x"), "bandcamp")
+        self.assertEqual(worker.provider_for_url("https://vk.com/video-1_2"), "vk")
+        self.assertEqual(worker.provider_for_url("https://example.com/a.m4a"), "")
+
+    def test_rutube_results_are_parsed(self):
+        payload = {
+            "results": [
+                {
+                    "id": "abc",
+                    "title": "Кино - Группа крови",
+                    "duration": 246,
+                    "video_url": "https://rutube.ru/video/abc/",
+                    "author": {"name": "Кино"},
+                    "is_live": False,
+                },
+                {"id": "live", "title": "Live", "duration": 10, "video_url": "https://rutube.ru/video/live/", "is_live": True},
+            ]
+        }
+        result = worker.parse_rutube_results(payload)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["provider"], "rutube")
+        self.assertEqual(result[0]["pageUrl"], "https://rutube.ru/video/abc/")
+        self.assertEqual(result[0]["uploader"], "Кино")
+        self.assertEqual(result[0]["duration"], 246)
+
+    def test_dailymotion_results_are_parsed(self):
+        payload = {
+            "list": [
+                {
+                    "id": "x1",
+                    "title": "Кино - Группа крови",
+                    "url": "https://www.dailymotion.com/video/x1",
+                    "duration": 246,
+                    "owner.screenname": "Кино",
+                }
+            ]
+        }
+        result = worker.parse_dailymotion_results(payload)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["provider"], "dailymotion")
+        self.assertEqual(result[0]["uploader"], "Кино")
+        self.assertEqual(result[0]["duration"], 246)
+
+
 class SearchMetadataTests(unittest.TestCase):
     def test_search_returns_metadata_without_downloading(self):
         class FakeGitHub:
@@ -317,7 +424,7 @@ class SearchMetadataTests(unittest.TestCase):
             }
         ]
         with patch.dict(os.environ, metadata, clear=True), \
-                patch("uncensor_worker.search_entries", side_effect=[entries, []]), \
+                patch("uncensor_worker.search_entries", side_effect=[entries, [], [], []]), \
                 patch("uncensor_worker.validate_public_https") as validate, \
                 patch("uncensor_worker.download_and_transcode") as download:
             job = worker.JobStatus(github, "search", "job-12345678", "owner/repo", "main")
@@ -742,6 +849,7 @@ class ApprovalTests(unittest.TestCase):
 class ValidationTests(unittest.TestCase):
     def test_job_and_track_ids(self):
         worker.validate_inputs("search", "12345678-abcd", "123456")
+        worker.validate_inputs("check", "12345678-abcd", "0")
         with self.assertRaises(worker.WorkerError):
             worker.validate_inputs("unknown", "12345678-abcd", "123456")
         with self.assertRaises(worker.WorkerError):

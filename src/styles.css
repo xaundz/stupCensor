@@ -379,6 +379,36 @@
     border-color: rgba(255, 189, 138, 0.24);
 }
 
+.uc-badge-rutube {
+    color: #a9e7ff;
+    border-color: rgba(169, 231, 255, 0.24);
+}
+
+.uc-badge-dailymotion {
+    color: #9db9ff;
+    border-color: rgba(157, 185, 255, 0.24);
+}
+
+.uc-badge-vimeo {
+    color: #8fe3ef;
+    border-color: rgba(143, 227, 239, 0.24);
+}
+
+.uc-badge-bandcamp {
+    color: #9fe0d8;
+    border-color: rgba(159, 224, 216, 0.24);
+}
+
+.uc-badge-vk {
+    color: #a9c4ff;
+    border-color: rgba(169, 196, 255, 0.24);
+}
+
+.uc-badge-unknown {
+    color: #c7c7d2;
+    border-color: rgba(199, 199, 210, 0.24);
+}
+
 .uc-grid {
     display: grid;
     gap: 9px;

@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
     inputs:
       action:
-        description: "search | confirm | manual | toggle | remove"
+        description: "search | confirm | manual | toggle | remove | check"
         required: true
         type: choice
         options:
@@ -14,6 +14,7 @@ on:
           - manual
           - toggle
           - remove
+          - check
       job_id:
         description: "ID задания, созданный аддоном"
         required: true

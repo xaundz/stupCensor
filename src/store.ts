@@ -638,6 +638,20 @@ export async function confirmCandidate(sourceJob: JobRecord, candidate: SourceCa
     return job
 }
 
+export async function startAuthCheck(): Promise<JobRecord> {
+    const api = requireApi()
+    if (!state.hasToken) throw new Error('Для проверки YouTube нужен GitHub-токен.')
+    const job = createJob('check', { id: '0', title: 'Проверка YouTube', artist: '' })
+    addJob(job)
+    await dispatchJob(api, job, {
+        track_id: '0',
+        title: 'Проверка YouTube',
+        artist: '',
+        duration: '0',
+    })
+    return job
+}
+
 export async function startManualAdd(track: TrackRef, meta: TrackSearchMeta, directUrl: string): Promise<JobRecord> {
     const api = requireApi()
     const awaiting = state.jobs.find(
@@ -651,10 +665,10 @@ export async function startManualAdd(track: TrackRef, meta: TrackSearchMeta, dir
     }
     const url = directUrl.trim()
     if (!isStableHttpsUrl(url)) {
-        throw new Error('Нужна постоянная HTTPS-ссылка на аудиофайл без временных подписей (например, Releases вашего репозитория).')
+        throw new Error('Нужна постоянная HTTPS-ссылка без временных подписей (например, Releases вашего репозитория).')
     }
-    if (/youtube\.com|youtu\.be|soundcloud\.com/i.test(url)) {
-        throw new Error('Это страница сервиса, а не прямой аудиофайл. Для YouTube/SoundCloud используйте поиск кандидатов.')
+    if (/spotify\.com|music\.apple\.com|deezer\.com|music\.yandex\./i.test(url)) {
+        throw new Error('Этот сервис не поддерживается: его аудио защищено DRM. Используйте YouTube, SoundCloud, Rutube, Dailymotion, Vimeo, Bandcamp или VK.')
     }
     const job = createJob('manual', { id: track.id, title: meta.title, artist: meta.artist })
     job.manualUrl = url
@@ -827,11 +841,26 @@ export function forgetJob(jobId: string): void {
     void persistJobs()
 }
 
+const MEDIA_PROVIDERS = [
+    'youtube',
+    'soundcloud',
+    'rutube',
+    'dailymotion',
+    'vimeo',
+    'bandcamp',
+    'vk',
+    'unknown',
+] as const
+
+function isMediaProvider(value: unknown): value is SourceCandidate['provider'] {
+    return typeof value === 'string' && (MEDIA_PROVIDERS as readonly string[]).includes(value)
+}
+
 function parseCandidate(raw: unknown): SourceCandidate | null {
     if (!raw || typeof raw !== 'object') return null
     const item = raw as Record<string, unknown>
     const id = sanitizeText(item.id, 120)
-    const provider = item.provider === 'youtube' || item.provider === 'soundcloud' ? item.provider : null
+    const provider = isMediaProvider(item.provider) ? item.provider : null
     const pageUrl = sanitizeText(item.pageUrl, 2000)
     if (!id || !provider || !isStableHttpsUrl(pageUrl)) return null
     return {
@@ -910,6 +939,19 @@ function mergeRemoteJob(job: JobRecord, remote: Record<string, unknown>): JobRec
 }
 
 async function handleTerminalJob(job: JobRecord): Promise<void> {
+    if (job.action === 'check' && !job.processed) {
+        updateJobLocal(job.id, { processed: true })
+        if (job.status === 'ready') {
+            const message = job.note || 'YouTube доступен.'
+            notifyUser('info', message)
+            pushNotice('success', message)
+        } else if (job.status === 'failed') {
+            const message = job.error?.message || 'Проверка YouTube завершилась с ошибкой.'
+            notifyUser('error', message)
+            pushNotice('error', message)
+        }
+        return
+    }
     if (job.status === 'ready' && !job.processed) {
         if (job.auto) {
             const candidate = autoCandidate(job)

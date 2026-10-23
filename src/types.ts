@@ -13,9 +13,19 @@ export type TrackSearchMeta = {
     durationMs: number
 }
 
+export type MediaProvider =
+    | 'youtube'
+    | 'soundcloud'
+    | 'rutube'
+    | 'dailymotion'
+    | 'vimeo'
+    | 'bandcamp'
+    | 'vk'
+    | 'unknown'
+
 export type SourceCandidate = {
     id: string
-    provider: 'youtube' | 'soundcloud'
+    provider: MediaProvider
     pageUrl: string
     title: string
     artist: string
@@ -28,7 +38,7 @@ export type SourceCandidate = {
 }
 
 export type SourceInfo = {
-    provider: 'youtube' | 'soundcloud' | 'manual' | 'unknown'
+    provider: MediaProvider | 'manual'
     pageUrl: string
     title: string
     artist: string
@@ -79,7 +89,7 @@ export type JobError = {
 
 export type JobRecord = {
     id: string
-    action: 'search' | 'confirm' | 'manual' | 'toggle' | 'remove'
+    action: 'search' | 'confirm' | 'manual' | 'toggle' | 'remove' | 'check'
     status: JobStatus
     repo: string
     branch: string

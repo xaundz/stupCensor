@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 const root = process.cwd()
+const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 const outDir = path.join(root, 'dist', 'stupid-censor')
 const archivePath = path.join(root, 'dist', 'stupid-censor.pext')
 
@@ -21,7 +22,7 @@ const metadata = {
     id: 'stupid-censor',
     name: 'stupidCensor',
     description: 'Облачная библиотека замен для заблюренных треков Яндекс Музыки.',
-    version: '1.1.2',
+    version: packageJson.version,
     author: 'xaunds',
     type: 'script',
     image: 'Assets/logo.png',

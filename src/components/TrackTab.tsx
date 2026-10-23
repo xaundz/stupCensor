@@ -199,7 +199,7 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
     const runManual = async () => {
         setActionError('')
         if (!manualUrl.trim()) {
-            setActionError('Вставьте прямую ссылку на аудиофайл.')
+            setActionError('Вставьте ссылку на аудиофайл или страницу источника.')
             return
         }
         setBusy('manual')
@@ -538,12 +538,13 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
             >
                 <summary>
                     <span>Добавить свою ссылку</span>
-                    <span className="uc-muted uc-small">прямой HTTPS-файл</span>
+                    <span className="uc-muted uc-small">файл или страница</span>
                 </summary>
                 <div className="uc-manual-body">
                     <div className="uc-hint">
-                        Подойдёт постоянная ссылка на m4a, mp3, aac, ogg, opus, flac или wav. Страница YouTube или
-                        SoundCloud — нет.
+                        Подойдёт прямая ссылка на m4a, mp3, aac, ogg, opus, flac или wav либо страница YouTube,
+                        SoundCloud, Rutube, Dailymotion, Vimeo, Bandcamp или VK. Для YouTube нужны cookies в секрете
+                        YTDLP_COOKIES.
                         {replaceBlocked ? ' Заменить существующую запись может только владелец.' : admin ? '' : ' Ссылка уйдёт владельцу на проверку.'}
                     </div>
                     <div className="uc-inline">
@@ -551,7 +552,7 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                             className="uc-grow"
                             value={manualUrl}
                             onChange={event => setManualUrl(event.target.value)}
-                            placeholder="https://github.com/…/releases/download/library/track.m4a"
+                            placeholder="https://soundcloud.com/… или https://github.com/…/track.m4a"
                         />
                         <button
                             type="button"
@@ -611,7 +612,7 @@ function SearchFields({ artist, title, durationSec, sourceUrl, onArtist, onTitle
                 <input
                     value={sourceUrl}
                     onChange={event => onSource(event.target.value)}
-                    placeholder="YouTube или SoundCloud, необязательно"
+                    placeholder="YouTube, SoundCloud, Rutube, Dailymotion…"
                 />
             </label>
         </div>
