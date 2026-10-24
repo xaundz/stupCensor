@@ -730,6 +730,7 @@
 
 .uc-candidate {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
     align-items: center;
     gap: 14px;
@@ -756,6 +757,31 @@
     align-items: flex-end;
     gap: 8px;
     flex: 0 0 auto;
+}
+
+.uc-source-preview {
+    flex: 0 0 100%;
+    width: 100%;
+    min-width: 0;
+    border-top: 1px solid var(--uc-line);
+    padding-top: 12px;
+}
+
+.uc-preview-frame {
+    display: block;
+    width: 100%;
+    border: 0;
+    border-radius: 8px;
+    background: var(--uc-bg-soft);
+    margin-bottom: 8px;
+}
+
+.uc-preview-frame-youtube {
+    aspect-ratio: 16 / 9;
+}
+
+.uc-preview-frame-soundcloud {
+    height: 166px;
 }
 
 .uc-more {
@@ -1071,8 +1097,13 @@
 
     .uc-candidate-actions {
         flex-direction: row;
+        flex-wrap: wrap;
         align-items: center;
         justify-content: space-between;
+    }
+
+    .uc-source-preview {
+        flex: none;
     }
 
     .uc-mapping-row {

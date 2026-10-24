@@ -24,11 +24,13 @@ import tempfile
 import time
 import unicodedata
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Callable, Iterable
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import parse_qs, quote, urljoin, urlparse
+from uuid import uuid4
 
 try:
     import requests
@@ -58,8 +60,7 @@ JOB_ETA_SECONDS = {
     "reject": 6,
     "check": 20,
 }
-SEARCH_PROVIDERS = ("youtube", "soundcloud", "rutube", "dailymotion")
-MEDIA_PROVIDERS = (*SEARCH_PROVIDERS, "vimeo", "bandcamp", "vk")
+SEARCH_PROVIDERS = ("youtube", "soundcloud")
 PROVIDER_DOMAINS = {
     "youtube": ("youtube.com", "youtu.be"),
     "soundcloud": ("soundcloud.com",),
@@ -96,6 +97,31 @@ def provider_for_url(value: str) -> str:
 
 def is_media_page(value: str) -> bool:
     return bool(provider_for_url(value))
+
+
+def validate_source(url: str, info: dict[str, Any] | None = None) -> str:
+    provider = provider_for_url(url)
+    if provider not in SEARCH_PROVIDERS:
+        raise WorkerError("source_unsupported", "Разрешены только YouTube и SoundCloud.")
+    if info is not None:
+        if info.get("_type") in ("playlist", "multi_video"):
+            raise WorkerError("source_mismatch", "Нужна ссылка на одну выбранную запись, не плейлист.")
+        resolved = str(info.get("webpage_url") or url)
+        if provider_for_url(resolved) != provider:
+            raise WorkerError("source_mismatch", "Источник изменил провайдера выбранной записи.")
+        original, actual = urlparse(url), urlparse(resolved)
+        if provider == "youtube":
+            def video_id(parsed: Any) -> str:
+                if parsed.hostname == "youtu.be":
+                    return parsed.path.strip("/")
+                return (parse_qs(parsed.query).get("v") or [parsed.path.rstrip("/").split("/")[-1]])[0]
+
+            expected_id = video_id(original)
+            if video_id(actual) != expected_id or (info.get("id") and str(info["id"]) != expected_id):
+                raise WorkerError("source_mismatch", "Источник вернул другую запись вместо выбранной.")
+        elif original.path.rstrip("/") != actual.path.rstrip("/"):
+            raise WorkerError("source_mismatch", "Источник вернул другую запись вместо выбранной.")
+    return provider
 
 
 class WorkerError(Exception):
@@ -639,7 +665,8 @@ class GitHubAPI:
 
     def list_assets(self, release_id: int) -> list[dict[str, Any]]:
         assets: list[dict[str, Any]] = []
-        for page in range(1, 11):
+        page = 1
+        while True:
             response = self.session.get(
                 self._url(f"/releases/{release_id}/assets"),
                 params={"per_page": 100, "page": page},
@@ -648,11 +675,12 @@ class GitHubAPI:
             if not response.ok:
                 raise self._error(response, "Не удалось прочитать assets релиза")
             payload = response.json()
-            if not isinstance(payload, list):
-                break
-            assets.extend(item for item in payload if isinstance(item, dict))
+            if not isinstance(payload, list) or any(not isinstance(item, dict) for item in payload):
+                raise WorkerError("github_asset", "GitHub вернул некорректный список assets релиза.")
+            assets.extend(payload)
             if len(payload) < 100:
                 break
+            page += 1
         return assets
 
     def find_asset(self, release: dict[str, Any], name: str) -> dict[str, Any] | None:
@@ -846,97 +874,8 @@ def base_ydl_options(url_or_provider: str = "") -> dict[str, Any]:
     }
 
 
-def http_get_json(url: str, params: dict[str, Any], provider: str) -> dict[str, Any]:
-    if requests is None:
-        raise WorkerError("worker_env", "Модуль requests не установлен на runner.")
-    try:
-        response = requests.get(url, params=params, timeout=25, headers={"User-Agent": USER_AGENT})
-        response.raise_for_status()
-        payload = response.json()
-    except Exception as error:
-        raise WorkerError(
-            f"{provider}_search_failed",
-            f"Поиск в {provider} не удался.",
-            truncate_text(error, 1200),
-        ) from error
-    if not isinstance(payload, dict):
-        raise WorkerError(f"{provider}_search_failed", f"{provider} вернул неожиданный ответ.")
-    return payload
-
-
-def parse_rutube_results(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    entries = payload.get("results")
-    if not isinstance(entries, list):
-        return []
-    result: list[dict[str, Any]] = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("is_live") or entry.get("is_deleted") or entry.get("is_hidden"):
-            continue
-        page_url = clean_text(entry.get("video_url"), 1000)
-        if not page_url.startswith("https://"):
-            continue
-        author = entry.get("author") if isinstance(entry.get("author"), dict) else {}
-        result.append(
-            {
-                "provider": "rutube",
-                "pageUrl": page_url,
-                "title": clean_text(entry.get("title"), 300),
-                "artist": "",
-                "uploader": clean_text(author.get("name"), 200),
-                "duration": max(0, int(entry.get("duration") or 0)),
-                "isLive": bool(entry.get("is_live")),
-            }
-        )
-    return result
-
-
-def parse_dailymotion_results(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    entries = payload.get("list")
-    if not isinstance(entries, list):
-        return []
-    result: list[dict[str, Any]] = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        page_url = clean_text(entry.get("url"), 1000)
-        if not page_url.startswith("https://"):
-            continue
-        result.append(
-            {
-                "provider": "dailymotion",
-                "pageUrl": page_url,
-                "title": clean_text(entry.get("title"), 300),
-                "artist": "",
-                "uploader": clean_text(entry.get("owner.screenname") or entry.get("owner"), 200),
-                "duration": max(0, int(entry.get("duration") or 0)),
-                "isLive": False,
-            }
-        )
-    return result
-
-
 def search_entries(provider: str, query: str) -> list[dict[str, Any]]:
-    if provider == "rutube":
-        payload = http_get_json(
-            "https://rutube.ru/api/search/video/",
-            {"query": query, "limit": 15},
-            provider,
-        )
-        return parse_rutube_results(payload)
-    if provider == "dailymotion":
-        payload = http_get_json(
-            "https://api.dailymotion.com/videos",
-            {
-                "search": query,
-                "fields": "id,title,url,duration,owner.screenname",
-                "limit": 15,
-            },
-            provider,
-        )
-        return parse_dailymotion_results(payload)
-    if provider not in ("youtube", "soundcloud"):
+    if provider not in SEARCH_PROVIDERS:
         return []
 
     yt_dlp = yt_dlp_module()
@@ -967,9 +906,7 @@ def search_entries(provider: str, query: str) -> list[dict[str, Any]]:
                 webpage = f"https://www.youtube.com/watch?v={quote(identifier)}"
             else:
                 continue
-        if provider == "youtube" and "youtube.com" not in webpage and "youtu.be" not in webpage:
-            continue
-        if provider == "soundcloud" and "soundcloud.com" not in webpage:
+        if provider_for_url(webpage) != provider:
             continue
         duration = int(entry.get("duration") or 0)
         result.append(
@@ -987,6 +924,7 @@ def search_entries(provider: str, query: str) -> list[dict[str, Any]]:
 
 
 def extract_single_page(page_url: str) -> dict[str, Any]:
+    validate_source(page_url)
     yt_dlp = yt_dlp_module()
     try:
         with yt_dlp.YoutubeDL({**base_ydl_options(page_url), "skip_download": True}) as ydl:
@@ -997,12 +935,7 @@ def extract_single_page(page_url: str) -> dict[str, Any]:
         raise WorkerError("source_extract_failed", "Не удалось прочитать указанную страницу источника.", truncate_text(error, 1200)) from error
     if not isinstance(info, dict):
         raise WorkerError("source_extract_failed", "Источник не вернул данные.")
-    if info.get("_type") in ("playlist", "multi_video"):
-        entries = info.get("entries")
-        if isinstance(entries, list) and entries and isinstance(entries[0], dict):
-            info = entries[0]
-        else:
-            raise WorkerError("source_extract_failed", "Ссылка ведёт на плейлист, а не на отдельную запись.")
+    validate_source(page_url, info)
     return info
 
 
@@ -1046,6 +979,7 @@ def probe_candidate_availability(page_url: str, provider: str) -> str:
 
 
 def download_and_transcode(page_url: str, work_dir: Path) -> tuple[Path, float, dict[str, Any]]:
+    validate_source(page_url)
     yt_dlp = yt_dlp_module()
     options = base_ydl_options(page_url)
     target_dir = Path(tempfile.mkdtemp(prefix="source-", dir=work_dir))
@@ -1067,6 +1001,11 @@ def download_and_transcode(page_url: str, work_dir: Path) -> tuple[Path, float, 
     if not isinstance(info, dict):
         shutil.rmtree(target_dir, ignore_errors=True)
         raise WorkerError("download_failed", "Источник не вернул данные после скачивания.")
+    try:
+        validate_source(page_url, info)
+    except WorkerError:
+        shutil.rmtree(target_dir, ignore_errors=True)
+        raise
     downloaded: Path | None = None
     requested = info.get("requested_downloads")
     if isinstance(requested, list):
@@ -1106,9 +1045,7 @@ def make_candidate(
 ) -> dict[str, Any]:
     page_url = clean_text(raw.get("pageUrl"), 1000)
     validate_public_https(page_url)
-    provider = clean_text(raw.get("provider"), 40)
-    if provider not in MEDIA_PROVIDERS:
-        provider = provider_for_url(page_url) or "unknown"
+    provider = validate_source(page_url)
     duration_sec = max(0, int(raw.get("duration") or 0))
     title = clean_text(raw.get("title"), 300) or "Без названия"
     uploader = clean_text(raw.get("uploader"), 200)
@@ -1155,6 +1092,7 @@ def handle_search(github: GitHubAPI, job: JobStatus) -> None:
         raise WorkerError("input_invalid", "Длительность трека выглядит некорректной.")
     if source_url:
         validate_public_https(source_url)
+        validate_source(source_url)
     query = f"{target_artist} {target_title}".strip()
     provider_errors: list[str] = []
     raw_candidates: list[dict[str, Any]] = []
@@ -1177,11 +1115,13 @@ def handle_search(github: GitHubAPI, job: JobStatus) -> None:
         except WorkerError as error:
             provider_errors.append(f"указанная ссылка: {error.message}")
 
-    for provider in SEARCH_PROVIDERS:
-        try:
-            raw_candidates.extend(search_entries(provider, query))
-        except WorkerError as error:
-            provider_errors.append(f"{provider}: {error.message} {error.detail}".strip())
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        searches = [executor.submit(search_entries, provider, query) for provider in SEARCH_PROVIDERS]
+        for provider, result in zip(SEARCH_PROVIDERS, searches):
+            try:
+                raw_candidates.extend(result.result())
+            except WorkerError as error:
+                provider_errors.append(f"{provider}: {error.message} {error.detail}".strip())
 
     seen_urls: set[str] = set()
     candidates: list[dict[str, Any]] = []
@@ -1211,12 +1151,15 @@ def handle_search(github: GitHubAPI, job: JobStatus) -> None:
         ),
         reverse=True,
     )
-    for candidate in candidates[:8]:
-        reason = probe_candidate_availability(str(candidate.get("pageUrl") or ""), str(candidate.get("provider") or ""))
-        candidate["probed"] = True
-        if reason:
-            candidate["unavailable"] = True
-            candidate["unavailableReason"] = reason
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        probes = [executor.submit(probe_candidate_availability, item["pageUrl"], item["provider"])
+                  for item in candidates[:8]]
+        for candidate, result in zip(candidates[:8], probes):
+            reason = result.result()
+            candidate["probed"] = True
+            if reason:
+                candidate["unavailable"] = True
+                candidate["unavailableReason"] = reason
     if not candidates:
         raise WorkerError(
             "no_candidates",
@@ -1261,60 +1204,6 @@ def build_mapping(
         mapping["addedAt"] = str(existing.get("addedAt") or now)
         mapping["enabled"] = True
     return mapping
-
-
-SOURCE_FALLBACK_CODES = {
-    "source_drm",
-    "source_unavailable",
-    "youtube_auth",
-    "cookies_invalid",
-    "download_failed",
-    "duration_mismatch",
-    "audio_short",
-    "audio_long",
-    "audio_invalid",
-    "audio_empty",
-}
-FALLBACK_REJECT_WARNINGS = (
-    "кавер",
-    "перепев",
-    "ремикс",
-    "мэшап",
-    "инструментал",
-    "минус",
-    "караоке",
-    "концерт",
-    "изменён темп",
-    "обработка ии",
-)
-
-
-def fallback_candidates(source_job: dict[str, Any], selected: dict[str, Any]) -> list[dict[str, Any]]:
-    selected_id = str(selected.get("id") or "")
-    target_sec = int(source_job.get("trackDurationMs") or 0) // 1000
-    result: list[dict[str, Any]] = []
-    for item in source_job.get("candidates") or []:
-        if not isinstance(item, dict):
-            continue
-        if str(item.get("id") or "") == selected_id:
-            continue
-        if item.get("unavailable") is True:
-            continue
-        page_url = clean_text(item.get("pageUrl"), 1000)
-        if not page_url:
-            continue
-        score = float(item.get("score") or 0)
-        if score < 0.55:
-            continue
-        duration_sec = int(item.get("durationMs") or 0) // 1000
-        if target_sec and duration_sec and abs(duration_sec - target_sec) > 10:
-            continue
-        warnings = " ".join(str(value) for value in (item.get("warnings") or [])).casefold()
-        if any(pattern in warnings for pattern in FALLBACK_REJECT_WARNINGS):
-            continue
-        result.append(item)
-    result.sort(key=lambda item: float(item.get("score") or 0), reverse=True)
-    return result
 
 
 def current_actor() -> str:
@@ -1478,6 +1367,7 @@ def handle_confirm(github: GitHubAPI, job: JobStatus) -> None:
         raise WorkerError("candidate_missing", "Кандидат не найден в исходном задании.")
     source_url = clean_text(candidate.get("pageUrl"), 1000)
     validate_public_https(source_url)
+    provider = validate_source(source_url)
     require_existing_replacement_permission(github, job.track_id)
     if not is_repository_owner():
         create_submission(
@@ -1489,92 +1379,44 @@ def handle_confirm(github: GitHubAPI, job: JobStatus) -> None:
                 "candidateId": candidate_id_value,
                 "sourceUrl": source_url,
                 "candidateTitle": clean_text(candidate.get("title"), 300),
-                "candidateProvider": clean_text(candidate.get("provider"), 40),
+                "candidateProvider": provider,
             },
         )
         return
 
-    attempts = [candidate, *fallback_candidates(source_job, candidate)]
     work_root = Path(tempfile.mkdtemp(prefix="uncensor-confirm-"))
-    failure_notes: list[str] = []
     try:
-        chosen: dict[str, Any] | None = None
-        output_path: Path | None = None
-        duration = 0.0
-        downloaded_info: dict[str, Any] = {}
-        skip_provider = ""
-        download_attempts = 0
-        for index, current in enumerate(attempts):
-            page_url = clean_text(current.get("pageUrl"), 1000)
-            title = clean_text(current.get("title"), 200) or page_url
-            provider = str(current.get("provider") or "")
-            if skip_provider and provider == skip_provider:
-                continue
-            try:
-                validate_public_https(page_url)
-                if current.get("unavailable") is True:
-                    raise WorkerError(
-                        "source_unavailable",
-                        clean_text(current.get("unavailableReason"), 300) or "Этот источник помечен как недоступный.",
-                    )
-                if provider == "soundcloud" and not current.get("probed"):
-                    reason = probe_candidate_availability(page_url, provider)
-                    if reason:
-                        raise WorkerError("source_unavailable", reason)
-                download_attempts += 1
-                output_path, duration, downloaded_info = download_and_transcode(page_url, work_root)
-                duration_sec = int(round(duration))
-                expected_sec = int(current.get("durationMs") or source_job.get("trackDurationMs") or 0) // 1000
-                if expected_sec and not duration_acceptable(expected_sec, duration_sec):
-                    raise WorkerError(
-                        "duration_mismatch",
-                        f"Длительность изменилась: ожидалось около {expected_sec} с, получено {duration_sec} с.",
-                    )
-                chosen = current
-                break
-            except WorkerError as error:
-                if error.code in ("youtube_auth", "cookies_invalid"):
-                    skip_provider = "youtube"
-                remaining = [
-                    item
-                    for item in attempts[index + 1 :]
-                    if not (skip_provider and str(item.get("provider") or "") == skip_provider)
-                ]
-                if error.code not in SOURCE_FALLBACK_CODES or not remaining or download_attempts >= 5:
-                    if failure_notes:
-                        error.detail = truncate_text(" | ".join([*failure_notes, error.detail]), 3000)
-                    raise
-                failure_notes.append(f"{title}: {error.message}")
-                next_title = clean_text(remaining[0].get("title"), 200) or "следующий источник"
-                job.write(
-                    "running",
-                    note=f"Источник недоступен: {error.message} Пробую резервный вариант «{next_title}».",
-                )
-        if chosen is None or output_path is None:
-            raise WorkerError("download_failed", "Не удалось скачать ни один из источников.")
-
+        if candidate.get("unavailable") is True:
+            raise WorkerError("source_unavailable", clean_text(candidate.get("unavailableReason"), 300)
+                              or "Выбранный источник недоступен. Выберите другую запись.")
+        output_path, duration, downloaded_info = download_and_transcode(source_url, work_root)
+        validate_source(source_url, downloaded_info)
         duration_sec = int(round(duration))
+        expected_sec = int(candidate.get("durationMs") or source_job.get("trackDurationMs") or 0) // 1000
+        if expected_sec and not duration_acceptable(expected_sec, duration_sec):
+            raise WorkerError("duration_mismatch",
+                              f"Длительность изменилась: ожидалось около {expected_sec} с, получено {duration_sec} с.")
         library = github.ensure_release(LIBRARY_TAG, "Uncensor Cloud — library")
         track_id = job.track_id
-        final_name = f"{track_id}.m4a"
+        final_name = f"{track_id}-{job.job_id}-{uuid4().hex}.m4a"
         final_asset = github.upload_asset(library, final_name, output_path, "audio/mp4")
         audio_url = str(final_asset.get("browser_download_url") or "")
         if not audio_url.startswith("https://"):
             raise WorkerError("github_upload", "GitHub не вернул ссылку на итоговый аудиофайл.")
-        title = job.track_title or clean_text(chosen.get("title") or downloaded_info.get("title"), 300)
+        title = job.track_title or clean_text(candidate.get("title") or downloaded_info.get("title"), 300)
         artist = job.track_artist or clean_text(
-            chosen.get("artist") or chosen.get("uploader") or downloaded_info.get("artist"),
+            candidate.get("artist") or candidate.get("uploader") or downloaded_info.get("artist"),
             300,
         )
         source = {
-            "provider": chosen.get("provider") if chosen.get("provider") in MEDIA_PROVIDERS else "unknown",
-            "pageUrl": clean_text(chosen.get("pageUrl"), 1000),
-            "title": clean_text(chosen.get("title"), 300),
-            "artist": clean_text(chosen.get("artist"), 300),
-            "uploader": clean_text(chosen.get("uploader"), 300),
+            "provider": provider,
+            "pageUrl": source_url,
+            "title": clean_text(candidate.get("title"), 300),
+            "artist": clean_text(candidate.get("artist"), 300),
+            "uploader": clean_text(candidate.get("uploader"), 300),
             "durationMs": duration_sec * 1000,
-            "score": float(chosen.get("score") or 0),
-            "warnings": chosen.get("warnings") if isinstance(chosen.get("warnings"), list) else [],
+            "score": float(candidate.get("score") or 0),
+            "warnings": candidate.get("warnings") if isinstance(candidate.get("warnings"), list) else [],
         }
         existing: dict[str, Any] | None = None
 
@@ -1599,15 +1441,9 @@ def handle_confirm(github: GitHubAPI, job: JobStatus) -> None:
         github.delete_track_assets(library, track_id, keep_name=final_name)
         fields: dict[str, Any] = {
             "published": {"audioUrl": audio_url, "assetName": final_name},
-            "candidateId": str(chosen.get("id") or candidate_id_value),
+            "candidateId": candidate_id_value,
             "sourceJobId": source_job_id,
         }
-        if failure_notes:
-            fields["note"] = (
-                "Основной источник не подошёл. Использован резервный: "
-                f"«{clean_text(chosen.get('title'), 200) or 'без названия'}». "
-                + " ".join(failure_notes)
-            )
         job.write("published", **fields)
     finally:
         shutil.rmtree(work_root, ignore_errors=True)
@@ -1647,6 +1483,9 @@ def handle_manual(github: GitHubAPI, job: JobStatus) -> None:
     require_existing_replacement_permission(github, job.track_id)
     source_url = env("SOURCE_URL", required=True).strip()
     validate_public_https(source_url)
+    page_provider = provider_for_url(source_url)
+    if page_provider:
+        validate_source(source_url)
     if not is_repository_owner():
         create_submission(
             github,
@@ -1661,9 +1500,9 @@ def handle_manual(github: GitHubAPI, job: JobStatus) -> None:
         return
     work_root = Path(tempfile.mkdtemp(prefix="uncensor-manual-"))
     try:
-        page_provider = provider_for_url(source_url)
         if page_provider:
             output_path, duration, downloaded_info = download_and_transcode(source_url, work_root)
+            validate_source(source_url, downloaded_info)
             page_url = clean_text(downloaded_info.get("webpage_url"), 1000) or source_url
             title = job.track_title or clean_text(
                 downloaded_info.get("track") or downloaded_info.get("title"),
@@ -1686,7 +1525,7 @@ def handle_manual(github: GitHubAPI, job: JobStatus) -> None:
             uploader = ""
             page_provider = "manual"
         library = github.ensure_release(LIBRARY_TAG, "Uncensor Cloud — library")
-        final_name = f"{job.track_id}.m4a"
+        final_name = f"{job.track_id}-{job.job_id}-{uuid4().hex}.m4a"
         asset = github.upload_asset(library, final_name, output_path, "audio/mp4")
         audio_url = str(asset.get("browser_download_url") or "")
         if not audio_url.startswith("https://"):
@@ -1784,11 +1623,17 @@ def handle_toggle(github: GitHubAPI, job: JobStatus) -> None:
 
 def handle_remove(github: GitHubAPI, job: JobStatus) -> None:
     require_repository_owner("remove")
+    removed_audio_url = ""
 
     def mutate(index: dict[str, Any]) -> bool:
+        nonlocal removed_audio_url
+        removed_audio_url = ""
         tracks = index.setdefault("tracks", {})
         if job.track_id not in tracks:
             return False
+        mapping = tracks[job.track_id]
+        if isinstance(mapping, dict) and isinstance(mapping.get("audioUrl"), str):
+            removed_audio_url = mapping["audioUrl"]
         del tracks[job.track_id]
         return True
 
@@ -1796,7 +1641,7 @@ def handle_remove(github: GitHubAPI, job: JobStatus) -> None:
     library = github.get_release(LIBRARY_TAG)
     if library:
         github.delete_track_assets(library, job.track_id)
-    job.write("removed", note="Аудиофайлы трека удалены из Releases.")
+    job.write("removed", removedAudioUrl=removed_audio_url, note="Аудиофайлы трека удалены из Releases.")
 
 
 def validate_inputs(action: str, job_id: str, track_id: str) -> None:
@@ -1893,6 +1738,8 @@ def handle_issue_request(github: GitHubAPI, repo: str, branch: str) -> int:
             raise ValueError("Invalid source URL")
         if source_url:
             validate_public_https(source_url)
+            if action == "search" or provider_for_url(source_url):
+                validate_source(source_url)
         os.environ.update({
             "TRACK_ID": track_id, "TITLE": payload["title"], "ARTIST": payload["artist"],
             "DURATION": str(duration), "SOURCE_URL": source_url, "GITHUB_ACTOR": actor,
@@ -1920,10 +1767,11 @@ def handle_issue_request(github: GitHubAPI, repo: str, branch: str) -> int:
             if not isinstance(source_url, str) or len(source_url) > 1000:
                 raise ValueError("Invalid candidate URL")
             validate_public_https(source_url)
+            provider = validate_source(source_url)
             details = {
                 "sourceJobId": source_id, "candidateId": selected_id, "sourceUrl": source_url,
                 "candidateTitle": clean_text(candidate.get("title"), 300),
-                "candidateProvider": clean_text(candidate.get("provider"), 40),
+                "candidateProvider": provider,
             }
         elif action == "manual":
             validate_public_https(source_url)

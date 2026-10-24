@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { JobRecord, SourceCandidate, TrackRef } from '../types.ts'
+import { getSourcePreview } from '../lib/preview.ts'
+import { SourcePreview } from './SourcePreview.tsx'
 import {
     formatDate,
     formatDuration,
@@ -62,6 +64,7 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
     const [confirmRemove, setConfirmRemove] = useState(false)
     const [urlCheck, setUrlCheck] = useState('')
     const [now, setNow] = useState(Date.now())
+    const [previewKey, setPreviewKey] = useState('')
     const initializedFor = useRef('')
     const lastSeedId = useRef('')
     const manualSection = useRef<HTMLDetailsElement | null>(null)
@@ -128,6 +131,10 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
         )
     }, [state.jobs, track])
     const activeJob = confirmJob ?? (searchJob && searchJob.status !== 'ready' ? searchJob : null)
+
+    useEffect(() => {
+        setPreviewKey('')
+    }, [seed?.id, track?.id, searchJob?.id, activeJob?.id])
 
     useEffect(() => {
         if (!activeJob) return
@@ -259,7 +266,9 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
     }
 
     const timing = activeJob ? jobTiming(activeJob, now) : null
-    const readyCandidates = searchJob?.status === 'ready' ? (searchJob.candidates || []).slice().sort((a, b) => b.score - a.score) : []
+    const readyCandidates = searchJob?.status === 'ready'
+        ? (searchJob.candidates || []).filter(candidate => candidate.provider === 'youtube' || candidate.provider === 'soundcloud').sort((a, b) => b.score - a.score)
+        : []
     const replaceBlocked = !admin && Boolean(mapping)
 
     return (
@@ -433,6 +442,9 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                                 {readyCandidates.map(candidate => {
                                     const confirming = busy === `confirm:${candidate.id}`
                                     const unavailable = candidate.unavailable === true
+                                    const preview = getSourcePreview(candidate.provider, candidate.pageUrl)
+                                    const candidatePreviewKey = JSON.stringify([seed?.id, track.id, searchJob?.id, candidate.id, candidate.provider, candidate.pageUrl])
+                                    const previewOpen = previewKey === candidatePreviewKey
                                     return (
                                         <article className="uc-candidate" key={candidate.id}>
                                             <div className="uc-candidate-main">
@@ -461,6 +473,16 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                                                 <a className="uc-link uc-small" href={candidate.pageUrl} target="_blank" rel="noreferrer">
                                                     Источник
                                                 </a>
+                                                {preview ? (
+                                                    <button
+                                                        type="button"
+                                                        className="uc-btn uc-btn-small"
+                                                        aria-expanded={previewOpen}
+                                                        onClick={() => setPreviewKey(previewOpen ? '' : candidatePreviewKey)}
+                                                    >
+                                                        Прослушать
+                                                    </button>
+                                                ) : null}
                                                 <button
                                                     type="button"
                                                     className="uc-btn uc-btn-primary uc-btn-small"
@@ -470,6 +492,14 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                                                     {unavailable ? 'Недоступно' : confirming ? 'Отправляем…' : replaceBlocked ? 'Только владелец' : admin ? 'Сохранить' : 'На проверку'}
                                                 </button>
                                             </div>
+                                            {preview && previewOpen ? (
+                                                <SourcePreview
+                                                    key={candidatePreviewKey}
+                                                    preview={preview}
+                                                    title={candidate.title}
+                                                    onClose={() => setPreviewKey('')}
+                                                />
+                                            ) : null}
                                         </article>
                                     )
                                 })}
@@ -553,7 +583,7 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                 <div className="uc-manual-body">
                     <div className="uc-hint">
                         Подойдёт прямая ссылка на m4a, mp3, aac, ogg, opus, flac или wav либо страница YouTube,
-                        SoundCloud, Rutube, Dailymotion, Vimeo, Bandcamp или VK. Для YouTube нужны cookies в секрете
+                        или SoundCloud. Для YouTube нужны cookies в секрете
                         YTDLP_COOKIES.
                         {replaceBlocked ? ' Заменить существующую запись может только владелец.' : admin ? '' : ' Ссылка уйдёт владельцу на проверку.'}
                     </div>
@@ -622,7 +652,7 @@ function SearchFields({ artist, title, durationSec, sourceUrl, onArtist, onTitle
                 <input
                     value={sourceUrl}
                     onChange={event => onSource(event.target.value)}
-                    placeholder="YouTube, SoundCloud, Rutube, Dailymotion…"
+                    placeholder="YouTube или SoundCloud"
                 />
             </label>
         </div>

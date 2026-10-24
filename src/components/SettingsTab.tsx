@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 
 import { SHARED_REPO } from '../legacy/constants.ts'
 import { settings } from '../legacy/settings.ts'
-import { disconnectGitHub, isRepositoryAdmin, refreshRepoAccess, saveSetup, startAuthCheck } from '../store.ts'
+import { disconnectGitHub, isRepositoryAdmin, isRepositoryOwner, refreshRepoAccess, saveSetup, setTestAsUser, startAuthCheck } from '../store.ts'
 import { useStore } from './useStore.ts'
 
 const TOKEN_URL = 'https://github.com/settings/personal-access-tokens/new'
@@ -128,6 +128,21 @@ export function SettingsTab() {
 
     return (
         <div className="uc-stack">
+            {isRepositoryOwner() ? (
+                <section className="uc-card">
+                    <div className="uc-eyebrow">Только владельцу</div>
+                    <div className="uc-section-title">Проверка пользовательского режима</div>
+                    <label className="uc-checkbox uc-checkbox-spaced">
+                        <input type="checkbox" checked={state.testAsUser} onChange={event => setTestAsUser(event.target.checked)} />
+                        <span>Тестировать как обычный пользователь</span>
+                    </label>
+                    <div className="uc-hint">
+                        Аккаунт остаётся подключён. В аддоне доступны только пользовательские действия и заявки,
+                        без публикации и удаления из GitHub. После перезапуска режим выключится.
+                        На самом сайте GitHub вы по-прежнему владелец.
+                    </div>
+                </section>
+            ) : null}
             <section className="uc-card">
                 <div className="uc-section-head">
                     <div>

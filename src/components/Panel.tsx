@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { ADDON_AUTHOR, ADDON_NAME, ADDON_VERSION } from '../legacy/constants.ts'
 import { useCurrentTrack } from '../legacy/useCurrentTrack.ts'
 import type { TrackRef } from '../types.ts'
-import { clearNotice, isRepositoryAdmin } from '../store.ts'
+import { clearNotice, isRepositoryAdmin, isRepositoryOwner, setTestAsUser } from '../store.ts'
 import { LibraryTab } from './LibraryTab.tsx'
 import { JobsTab } from './JobsTab.tsx'
 import { SettingsTab } from './SettingsTab.tsx'
@@ -111,6 +111,13 @@ export function Panel({ controller, initialTrack, initialTab, initialAction }: P
                     </button>
                 ))}
             </nav>
+
+            {state.testAsUser && isRepositoryOwner() ? (
+                <div className="uc-notice uc-notice-info">
+                    <span>Режим тестирования: обычный пользователь</span>
+                    <button type="button" className="uc-btn uc-btn-small" onClick={() => setTestAsUser(false)}>Вернуть админ-режим</button>
+                </div>
+            ) : null}
 
             {notice ? (
                 <div className={`uc-notice uc-notice-${notice.kind}`}>

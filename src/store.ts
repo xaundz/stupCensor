@@ -51,6 +51,7 @@ type CachedLibrary = {
 
 export type StoreState = {
     hydrated: boolean
+    testAsUser: boolean
     config: GitHubConfig | null
     hasToken: boolean
     repoInfo: RepoInfo | null
@@ -68,6 +69,7 @@ export type StoreState = {
 
 const initialState: StoreState = {
     hydrated: false,
+    testAsUser: false,
     config: null,
     hasToken: false,
     repoInfo: null,
@@ -88,7 +90,11 @@ let apiRef: AddonApi | null = null
 let active = false
 let token = ''
 let polling = false
-let refreshing = false
+let libraryRefresh: Promise<LibraryIndex | null> | null = null
+let libraryRevision = 0
+let libraryRefreshRevision = 0
+const deletedAssets = new Map<string, string>()
+const terminalJobs = new Map<string, Promise<void>>()
 let accessRevision = 0
 const listeners = new Set<() => void>()
 
@@ -192,6 +198,8 @@ function persistCache(index: LibraryIndex, fetchedAt: number): Promise<void> {
 }
 
 export async function initialize(api: AddonApi): Promise<void> {
+    libraryRevision++
+    deletedAssets.clear()
     apiRef = api
     active = true
     if (api.signal.aborted) {
@@ -254,6 +262,7 @@ export async function initialize(api: AddonApi): Promise<void> {
     }
     setState({
         hydrated: true,
+        testAsUser: false,
         repoInfo: null,
         workflow: null,
         config,
@@ -297,15 +306,27 @@ export async function initialize(api: AddonApi): Promise<void> {
 
     if (config) {
         void refreshRepoAccess({ silent: true })
-        void refreshLibrary({ silent: true }).catch(error => setLastError(errorText(error)))
+            .then(() => active && apiRef === api ? refreshLibrary({ silent: true, force: true }) : null)
+            .catch(error => setLastError(errorText(error)))
     }
 }
 
-export function isRepositoryAdmin(): boolean {
+export function isRepositoryOwner(): boolean {
     const info = state.repoInfo
     return Boolean(state.hasToken && token && info?.canAdmin && info.viewer &&
         info.viewer.toLowerCase() === (info.owner || info.fullName.split('/')[0]).toLowerCase() &&
         info.fullName.toLowerCase() === state.config?.repo.toLowerCase())
+}
+
+export function isRepositoryAdmin(): boolean {
+    return isRepositoryOwner() && !state.testAsUser
+}
+
+export function setTestAsUser(enabled: boolean): void {
+    if (!isRepositoryOwner()) throw new Error('Тестовый режим доступен только подтверждённому владельцу.')
+    accessRevision++
+    libraryRevision++
+    setState({ testAsUser: enabled, busy: '', notice: null })
 }
 
 export async function refreshRepoAccess(options: { silent?: boolean } = {}): Promise<RepoInfo | null> {
@@ -343,7 +364,7 @@ export async function saveSetup(form: SetupForm, options: { readOnly?: boolean }
     const sameRepo = state.config?.repo === repo
     const rememberToken = options.readOnly ? false : form.rememberToken !== false
     const revision = ++accessRevision
-    setState({ busy: 'setup', lastError: '', repoInfo: null, workflow: null, hasToken: false })
+    setState({ busy: 'setup', lastError: '', repoInfo: null, workflow: null, hasToken: false, testAsUser: false })
     try {
         const client = new GitHubClient(api, repo, effectiveToken, '')
         const result = await client.verifySetup()
@@ -360,6 +381,8 @@ export async function saveSetup(form: SetupForm, options: { readOnly?: boolean }
         else await api.storage.remove(TOKEN_KEY)
         if (revision !== accessRevision || !active) throw new Error('Подключение GitHub изменилось. Повторите вход.')
         if (!sameRepo) {
+            libraryRevision++
+            deletedAssets.clear()
             await api.storage.remove(CACHE_KEY)
             setState({ library: EMPTY_INDEX, libraryFetchedAt: null, libraryFromCache: false })
         }
@@ -374,7 +397,7 @@ export async function saveSetup(form: SetupForm, options: { readOnly?: boolean }
         })
         await persistSets()
         pushNotice('success', `Подключено: ${result.repo.fullName}, ветка ${result.repo.defaultBranch}.`)
-        await refreshLibrary({ silent: true })
+        await refreshLibrary({ silent: true, force: true })
         return result
     } catch (error) {
         if (revision === accessRevision) setState({ busy: '', lastError: errorText(error), repoInfo: null, workflow: null })
@@ -386,7 +409,8 @@ export async function disconnectGitHub(forgetRepo: boolean): Promise<void> {
     const api = requireApi()
     token = ''
     accessRevision++
-    setState({ hasToken: false, repoInfo: null, workflow: null })
+    libraryRevision++
+    setState({ hasToken: false, repoInfo: null, workflow: null, testAsUser: false })
     await api.storage.remove(TOKEN_KEY)
     if (forgetRepo) {
         await persistConfig(null)
@@ -409,44 +433,81 @@ export async function disconnectGitHub(forgetRepo: boolean): Promise<void> {
     pushNotice('info', forgetRepo ? 'Репозиторий отключён, регистрации подмен сняты.' : 'Токен удалён. Остался режим чтения.')
 }
 
-export async function refreshLibrary(options: { silent?: boolean } = {}): Promise<LibraryIndex | null> {
+export async function refreshLibrary(options: {
+    silent?: boolean
+    force?: boolean
+    published?: JobRecord
+} = {}): Promise<LibraryIndex | null> {
     const api = requireApi()
     if (!state.config) {
         if (!options.silent) pushNotice('error', 'Сначала настройте репозиторий в разделе «GitHub».')
         return null
     }
-    if (refreshing) return state.library
-    refreshing = true
-    if (!options.silent) setState({ busy: 'library', lastError: '' })
+    if (libraryRefresh && !options.force && libraryRefreshRevision === libraryRevision) return libraryRefresh
+    const previous = libraryRefresh
+    const revision = ++libraryRevision
+    const config = state.config
+    const currentToken = token
+    const owner = isRepositoryAdmin()
+    const inScope = () => active && apiRef === api && state.config === config && token === currentToken && revision === libraryRevision
+    const refresh = async (): Promise<LibraryIndex | null> => {
+        await previous?.catch(() => undefined)
+        if (!inScope()) return null
+        if (!options.silent) setState({ busy: 'library', lastError: '' })
+        try {
+            const client = apiFor(api)
+            const index = await client.getIndex()
+            if (!inScope() || owner !== isRepositoryAdmin()) return null
+            if (!index) {
+                setState({ busy: '', libraryFromCache: false, lastError: 'list.json не найден в репозитории.' })
+                if (!options.silent) pushNotice('error', 'list.json не найден. Загрузите пример индекса в корень репозитория.')
+                return null
+            }
+            const published = options.published
+            const superseded = published && isTerminalSuperseded(published, index.tracks[published.trackId])
+            if (published) {
+                const mapping = index.tracks[published.trackId]
+                if (!superseded && (!published.published?.audioUrl || !mapping || mapping.audioUrl !== published.published.audioUrl ||
+                    (published.published.assetName && mapping.assetName !== published.published.assetName))) {
+                    throw new Error('list.json ещё не содержит опубликованную запись. Повторите обновление задания.')
+                }
+                // A newer terminal result can arrive while this index request is in flight.
+                if (superseded && !isLaterTimestamp(mapping?.updatedAt, published.finishedAt)) return state.library
+            }
+            for (const [trackId, audioUrl] of deletedAssets) {
+                if (index.tracks[trackId]?.audioUrl === audioUrl) delete index.tracks[trackId]
+            }
+            setState({
+                library: index,
+                libraryFetchedAt: Date.now(),
+                libraryFromCache: false,
+                busy: '',
+                lastError: '',
+            })
+            await persistCache(index, Date.now())
+            if (!inScope()) return null
+            if (settings.store.autoApply && !superseded) {
+                await applyLibrary(api, index, new Set(state.disabled), new Set(state.removed), inScope)
+            }
+            if (!inScope()) return null
+            if (!options.silent) {
+                pushNotice('success', `Библиотека обновлена: ${Object.keys(index.tracks).length} связей.`)
+            }
+            return index
+        } catch (error) {
+            if (!inScope()) return null
+            setState({ busy: '', lastError: errorText(error) })
+            if (!options.silent) pushNotice('error', errorText(error))
+            throw error
+        }
+    }
+    const pending = refresh()
+    libraryRefresh = pending
+    libraryRefreshRevision = revision
     try {
-        const client = apiFor(api)
-        const index = await client.getPublicIndex()
-        if (!index) {
-            setState({ busy: '', libraryFromCache: false, lastError: 'list.json не найден в репозитории.' })
-            if (!options.silent) pushNotice('error', 'list.json не найден. Загрузите пример индекса в корень репозитория.')
-            return null
-        }
-        setState({
-            library: index,
-            libraryFetchedAt: Date.now(),
-            libraryFromCache: false,
-            busy: '',
-            lastError: '',
-        })
-        await persistCache(index, Date.now())
-        if (settings.store.autoApply) {
-            await applyLibrary(api, index, new Set(state.disabled), new Set(state.removed))
-        }
-        if (!options.silent) {
-            pushNotice('success', `Библиотека обновлена: ${Object.keys(index.tracks).length} связей.`)
-        }
-        return index
-    } catch (error) {
-        setState({ busy: '', lastError: errorText(error) })
-        if (!options.silent) pushNotice('error', errorText(error))
-        throw error
+        return await pending
     } finally {
-        refreshing = false
+        if (libraryRefresh === pending) libraryRefresh = null
     }
 }
 
@@ -591,7 +652,9 @@ const AUTO_REJECT_WARNINGS = [
 ]
 
 function autoCandidate(job: JobRecord): SourceCandidate | null {
-    const candidates = Array.isArray(job.candidates) ? job.candidates : []
+    const candidates = Array.isArray(job.candidates)
+        ? job.candidates.filter(candidate => candidate.provider === 'youtube' || candidate.provider === 'soundcloud')
+        : []
     if (!candidates.length) return null
     const targetMs = Math.max(0, job.trackDurationMs || 0)
     const ranked = candidates
@@ -720,8 +783,8 @@ export async function startManualAdd(track: TrackRef, meta: TrackSearchMeta, dir
     if (!isStableHttpsUrl(url)) {
         throw new Error('Нужна постоянная HTTPS-ссылка без временных подписей (например, Releases вашего репозитория).')
     }
-    if (/spotify\.com|music\.apple\.com|deezer\.com|music\.yandex\./i.test(url)) {
-        throw new Error('Этот сервис не поддерживается: его аудио защищено DRM. Используйте YouTube, SoundCloud, Rutube, Dailymotion, Vimeo, Bandcamp или VK.')
+    if (/(?:^|\.)(?:spotify\.com|music\.apple\.com|deezer\.com|music\.yandex\.[a-z]+|rutube\.ru|dailymotion\.com|dai\.ly|vimeo\.com|bandcamp\.com|vk\.com|vkvideo\.ru)$/i.test(new URL(url).hostname)) {
+        throw new Error('Этот сервис не поддерживается. Используйте YouTube, SoundCloud или прямую HTTPS-ссылку на аудиофайл.')
     }
     const job = createJob('manual', { id: track.id, title: meta.title, artist: meta.artist })
     job.manualUrl = url
@@ -852,6 +915,8 @@ export async function removeMapping(trackId: string): Promise<void> {
     await persistSets()
     try {
         await disableOne(api, trackId)
+        const reload = await reloadCurrentTrack(api, trackId)
+        if (reload === 'restart-required') pushNotice('info', 'Связь скрыта локально. Перезапустите текущий трек, чтобы остановить старую подмену.')
     } catch (error) {
         pushNotice('error', `Не удалось снять регистрацию: ${errorText(error)}`)
     }
@@ -896,12 +961,6 @@ export function forgetJob(jobId: string): void {
 const MEDIA_PROVIDERS = [
     'youtube',
     'soundcloud',
-    'rutube',
-    'dailymotion',
-    'vimeo',
-    'bandcamp',
-    'vk',
-    'unknown',
 ] as const
 
 function isMediaProvider(value: unknown): value is SourceCandidate['provider'] {
@@ -975,6 +1034,9 @@ function mergeRemoteJob(job: JobRecord, remote: Record<string, unknown>): JobRec
         candidates,
         error,
         published,
+        removedAudioUrl: typeof remote.removedAudioUrl === 'string'
+            ? sanitizeText(remote.removedAudioUrl, 2000)
+            : job.removedAudioUrl,
         expiresAt: sanitizeText(remote.expiresAt, 40) || job.expiresAt,
         runUrl: safeJobUrl(remote.runUrl, job.runUrl),
         issueUrl: safeJobUrl(remote.issueUrl, job.issueUrl),
@@ -982,7 +1044,7 @@ function mergeRemoteJob(job: JobRecord, remote: Record<string, unknown>): JobRec
         requestedBy: sanitizeText(remote.requestedBy, 80) || job.requestedBy,
         startedAt,
         finishedAt: ['ready', 'published', 'failed', 'updated', 'removed', 'abandoned', 'rejected'].includes(status)
-            ? remoteUpdatedAt || job.finishedAt
+            ? sanitizeText(remote.finishedAt, 40) || remoteUpdatedAt || job.finishedAt
             : job.finishedAt,
         etaSeconds: Math.max(0, Number(remote.etaSeconds) || job.etaSeconds || 0) || undefined,
         note: sanitizeText(remote.note, 600) || job.note,
@@ -990,7 +1052,44 @@ function mergeRemoteJob(job: JobRecord, remote: Record<string, unknown>): JobRec
     }
 }
 
+function isLaterTimestamp(value: string | undefined, than: string | undefined): boolean {
+    const time = Date.parse(value || '')
+    const previous = Date.parse(than || '')
+    return Number.isFinite(time) && Number.isFinite(previous) && time > previous
+}
+
+function isTerminalSuperseded(job: JobRecord, mapping: TrackMapping | undefined): boolean {
+    return isLaterTimestamp(mapping?.updatedAt, job.finishedAt) || state.jobs.some(other =>
+        other.id !== job.id && other.repo === job.repo && other.branch === job.branch && other.trackId === job.trackId &&
+        ['published', 'removed', 'updated'].includes(other.status) && isLaterTimestamp(other.finishedAt, job.finishedAt))
+}
+
 async function handleTerminalJob(job: JobRecord): Promise<void> {
+    const key = JSON.stringify([job.repo, job.branch, job.trackId])
+    const previous = terminalJobs.get(key)
+    const api = apiRef
+    const config = state.config
+    const currentToken = token
+    const pending = (async () => {
+        await previous?.catch(() => undefined)
+        if (!active || apiRef !== api || state.config !== config || token !== currentToken) return
+        const current = state.jobs.find(item => item.id === job.id)
+        if (!current || current.processed || current.cancelRequested) return
+        await processTerminalJob(current)
+    })()
+    terminalJobs.set(key, pending)
+    try {
+        await pending
+    } finally {
+        if (terminalJobs.get(key) === pending) terminalJobs.delete(key)
+    }
+}
+
+async function processTerminalJob(job: JobRecord): Promise<void> {
+    if (['published', 'removed', 'updated'].includes(job.status) && isTerminalSuperseded(job, state.library.tracks[job.trackId])) {
+        updateJobLocal(job.id, { processed: true })
+        return
+    }
     if (job.action === 'check' && !job.processed) {
         updateJobLocal(job.id, { processed: true })
         if (job.status === 'ready') {
@@ -1031,19 +1130,34 @@ async function handleTerminalJob(job: JobRecord): Promise<void> {
         return
     }
     if (job.status === 'published' && !job.processed) {
-        updateJobLocal(job.id, { processed: true })
         const api = apiRef
         if (!api) return
+        const config = state.config
+        const currentToken = token
+        const inScope = () => active && apiRef === api && state.config === config && token === currentToken
         try {
-            await refreshLibrary({ silent: true })
+            const index = await refreshLibrary({ silent: true, force: true, published: job })
+            if (!index || !inScope()) return
+            const mapping = index.tracks[job.trackId]
+            if (isTerminalSuperseded(job, mapping)) {
+                updateJobLocal(job.id, { processed: true })
+                return
+            }
+            if (!mapping || mapping.audioUrl !== job.published?.audioUrl) throw new Error('Опубликованная запись не найдена в библиотеке.')
             setState({
                 disabled: state.disabled.filter(id => id !== job.trackId),
                 removed: state.removed.filter(id => id !== job.trackId),
             })
             await persistSets()
-            const mapping = findMapping(job.trackId)
-            if (mapping) await applyOne(api, mapping)
+            if (!inScope()) return
+            if (isTerminalSuperseded(job, state.library.tracks[job.trackId])) return updateJobLocal(job.id, { processed: true })
+            await applyOne(api, mapping)
+            if (!inScope()) return
+            if (isTerminalSuperseded(job, state.library.tracks[job.trackId])) return updateJobLocal(job.id, { processed: true })
             const reload = await reloadCurrentTrack(api, job.trackId)
+            if (!inScope()) return
+            if (isTerminalSuperseded(job, state.library.tracks[job.trackId])) return updateJobLocal(job.id, { processed: true })
+            updateJobLocal(job.id, { processed: true })
             if (reload === 'reloaded') {
                 notifyUser('info', `Подмена сохранена и применена к текущему треку: «${job.trackTitle}».`)
                 pushNotice('success', 'Подмена применена к текущему треку.')
@@ -1055,6 +1169,7 @@ async function handleTerminalJob(job: JobRecord): Promise<void> {
                 pushNotice('success', 'Подмена сохранена в облаке. Она применится при следующем воспроизведении.')
             }
         } catch (error) {
+            if (!inScope()) return
             pushNotice('error', `Аудио опубликовано, но библиотека не обновилась: ${errorText(error)}`)
         }
         return
@@ -1067,8 +1182,53 @@ async function handleTerminalJob(job: JobRecord): Promise<void> {
         return
     }
     if ((job.status === 'updated' || job.status === 'removed') && !job.processed) {
-        updateJobLocal(job.id, { processed: true })
-        void refreshLibrary({ silent: true }).catch(() => undefined)
+        const api = apiRef
+        const config = state.config
+        const currentToken = token
+        if (!api) return
+        const inScope = () => active && apiRef === api && state.config === config && token === currentToken
+        if (job.status === 'removed') {
+            const mapping = findMapping(job.trackId)
+            const superseded = () => {
+                const current = state.library.tracks[job.trackId]
+                return isTerminalSuperseded(job, current) ||
+                    (job.removedAudioUrl !== undefined && current && current.audioUrl !== job.removedAudioUrl)
+            }
+            if (job.removedAudioUrl !== undefined) {
+                if (!job.removedAudioUrl || (mapping && mapping.audioUrl !== job.removedAudioUrl)) {
+                    updateJobLocal(job.id, { processed: true })
+                    return
+                }
+                deletedAssets.set(job.trackId, job.removedAudioUrl)
+                // Invalidate a pre-deletion fetch before awaiting local player operations.
+                libraryRevision++
+                const tracks = { ...state.library.tracks }
+                delete tracks[job.trackId]
+                setState({ library: { ...state.library, tracks } })
+                await persistCache(state.library, Date.now())
+                if (!inScope()) return
+                if (superseded()) return updateJobLocal(job.id, { processed: true })
+                await disableOne(api, job.trackId)
+                if (!inScope()) return
+                if (superseded()) return updateJobLocal(job.id, { processed: true })
+                await reloadCurrentTrack(api, job.trackId)
+            } else {
+                // Legacy statuses cannot identify the deleted asset; trust the current index.
+                const index = await refreshLibrary({ silent: true, force: true })
+                if (!index || !inScope()) return
+                if (!index.tracks[job.trackId] && !isTerminalSuperseded(job, undefined)) {
+                    await disableOne(api, job.trackId)
+                    if (!inScope()) return
+                    if (state.library.tracks[job.trackId] || superseded()) return updateJobLocal(job.id, { processed: true })
+                    await reloadCurrentTrack(api, job.trackId)
+                }
+                if (inScope()) updateJobLocal(job.id, { processed: true })
+                return
+            }
+        }
+        if (!active || apiRef !== api || state.config !== config || token !== currentToken) return
+        const index = await refreshLibrary({ silent: true, force: true })
+        if (index && active && state.config === config && token === currentToken) updateJobLocal(job.id, { processed: true })
     }
 }
 
@@ -1076,7 +1236,14 @@ async function pollJob(job: JobRecord): Promise<void> {
     const api = apiRef
     if (!api) return
     const config = state.config
-    if (!config || job.repo !== config.repo || !state.jobs.some(item => item.id === job.id)) return
+    const currentToken = token
+    const inScope = () => active && apiRef === api && state.config === config && token === currentToken &&
+        state.jobs.some(item => item.id === job.id && !item.cancelRequested)
+    if (!config || job.repo !== config.repo || job.branch !== config.branch || !inScope()) return
+    if (['published', 'removed', 'updated'].includes(job.status)) {
+        await handleTerminalJob(job)
+        return
+    }
     if (job.externalRequest && (job.cancelRequested || ['abandoned', 'rejected'].includes(job.status))) return
     const ageMs = Date.now() - new Date(job.createdAt).getTime()
     const expiry = job.issueUrl && job.expiresAt ? Date.parse(job.expiresAt) : new Date(job.createdAt).getTime() + 24 * 60 * 60_000
@@ -1086,9 +1253,10 @@ async function pollJob(job: JobRecord): Promise<void> {
     }
     const client = new GitHubClient(api, job.repo, job.externalRequest ? '' : token, job.branch)
     const remote = await client.getJob(job.id)
-    if (!active || job.repo !== state.config?.repo || !state.jobs.some(item => item.id === job.id && !item.cancelRequested)) return
+    if (!inScope()) return
     if (remote) {
-        const merged = mergeRemoteJob(job, remote)
+        const current = state.jobs.find(item => item.id === job.id)!
+        const merged = mergeRemoteJob(current, remote)
         updateJobLocal(job.id, merged)
         await handleTerminalJob(merged)
         return
@@ -1096,6 +1264,7 @@ async function pollJob(job: JobRecord): Promise<void> {
     if (job.externalRequest || job.status === 'awaiting_approval') return
     if (ageMs > 20_000) {
         const run = await client.getRunForJob(job.id)
+        if (!inScope()) return
         if (run) {
             const patch: Partial<JobRecord> = { runUrl: isStableHttpsUrl(run.htmlUrl) ? run.htmlUrl : undefined, runId: run.id }
             if (run.startedAt && !job.startedAt) patch.startedAt = run.startedAt
@@ -1156,21 +1325,29 @@ export async function pollPendingJobs(): Promise<void> {
     if (polling || !active) return
     const pending = state.jobs.slice(0, 30).filter(job =>
         (job.externalRequest || token) && !job.cancelRequested &&
-        ['queued', 'running', 'awaiting_approval'].includes(job.status))
+        (['queued', 'running', 'awaiting_approval'].includes(job.status) ||
+            (!job.processed && ['published', 'removed', 'updated'].includes(job.status))))
     if (!pending.length) return
+    const config = state.config
+    const currentToken = token
+    const api = apiRef
+    const inScope = () => active && apiRef === api && state.config === config && token === currentToken
     polling = true
     try {
-        for (const job of pending) {
-            if (!active) break
-            if (job.repo !== state.config?.repo) continue
-            try {
-                await pollJob(job)
-            } catch (error) {
-                if (error instanceof GitHubError && (error.status === 401 || error.status === 403 || error.status === 404)) {
-                    setLastError(error.message)
+        let next = 0
+        await Promise.all(Array.from({ length: Math.min(3, pending.length) }, async () => {
+            while (next < pending.length && inScope()) {
+                const job = pending[next++]!
+                if (job.repo !== config?.repo) continue
+                try {
+                    await pollJob(job)
+                } catch (error) {
+                    if (inScope() && error instanceof GitHubError && (error.status === 401 || error.status === 403 || error.status === 404)) {
+                        setLastError(error.message)
+                    }
                 }
             }
-        }
+        }))
     } finally {
         polling = false
     }

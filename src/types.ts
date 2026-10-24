@@ -107,6 +107,8 @@ export type JobRecord = {
         audioUrl: string
         assetName: string
     }
+    // Undefined is a legacy status; empty means the worker found no mapping to remove.
+    removedAudioUrl?: string
     error?: JobError
     runUrl?: string
     runId?: number

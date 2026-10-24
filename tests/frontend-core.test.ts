@@ -4,6 +4,7 @@ import type { AddonApi } from '@pulsesync/addon-sdk'
 import type { JobRecord } from '../src/types.ts'
 import { buildRequestUrl } from '../src/lib/requests.ts'
 import { GitHubClient } from '../src/lib/github.ts'
+import { applyLibrary, parseIndex } from '../src/lib/library.ts'
 
 const job: JobRecord = {
     id: 'test-job', action: 'search', status: 'queued', repo: 'owner/cloud', branch: 'main',
@@ -72,4 +73,26 @@ test('ordinary setup does not request workflow access or dispatch Actions', asyn
     assert.equal((await client.verifySetup()).workflow, null)
     await assert.rejects(() => client.dispatch('search', {}), /подтверждённый владелец/)
     assert.ok(calls.every(url => !url.includes('/actions/')))
+})
+
+test('authenticated index reads use Contents with branch and owner authorization', async () => {
+    const client = new GitHubClient(mockApi(async (url, options) => {
+        assert.equal(url, 'https://api.github.com/repos/owner/cloud/contents/list.json?ref=release%2Fnext')
+        assert.equal(options?.headers?.Authorization, 'Bearer synthetic-owner-token')
+        assert.equal(options?.headers?.Accept, 'application/vnd.github.raw+json')
+        return Response.json({ schema: 1, tracks: {} })
+    }), 'owner/cloud', 'synthetic-owner-token', 'release/next')
+    assert.deepEqual((await client.getIndex())?.tracks, {})
+})
+
+test('library application stops if scope changes while clearing registrations', async () => {
+    let current = true
+    let applied = false
+    const api = { client: {
+        clearTrackReplacements: async () => { current = false },
+        setTrackReplacements: async () => { applied = true },
+    } } as unknown as AddonApi
+    const index = parseIndex({ tracks: { '123': { audioUrl: 'https://example.com/new.m4a' } } })
+    assert.equal(await applyLibrary(api, index, new Set(), new Set(), () => current), 0)
+    assert.equal(applied, false)
 })

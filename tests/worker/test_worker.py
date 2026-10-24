@@ -4,9 +4,11 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import textwrap
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "cloud"))
@@ -92,30 +94,6 @@ class SourceErrorTests(unittest.TestCase):
         ):
             reason = worker.probe_candidate_availability("https://soundcloud.com/a/b", "soundcloud")
         self.assertIn("DRM", reason)
-
-    def test_fallback_skips_unavailable_and_wrong_versions(self):
-        source = {
-            "trackDurationMs": 245000,
-            "candidates": [
-                {"id": "selected", "pageUrl": "https://soundcloud.com/a/selected", "durationMs": 245000, "score": 0.9, "warnings": []},
-                {"id": "drm", "pageUrl": "https://soundcloud.com/a/drm", "durationMs": 245000, "score": 0.95, "warnings": [], "unavailable": True},
-                {"id": "instrumental", "pageUrl": "https://youtube.com/watch?v=inst", "durationMs": 245000, "score": 0.94, "warnings": ["инструментальная версия"]},
-                {"id": "good", "pageUrl": "https://youtube.com/watch?v=good", "durationMs": 247000, "score": 0.83, "warnings": ["автор загрузившего не совпадает"]},
-            ],
-        }
-        selected = source["candidates"][0]
-        result = worker.fallback_candidates(source, selected)
-        self.assertEqual([item["id"] for item in result], ["good"])
-
-    def test_fallback_preserves_all_eligible_candidates(self):
-        candidates = [
-            {"id": f"c{index}", "pageUrl": f"https://soundcloud.com/a/{index}", "durationMs": 245000, "score": 0.9 - index / 100, "warnings": []}
-            for index in range(6)
-        ]
-        source = {"trackDurationMs": 245000, "candidates": candidates}
-        result = worker.fallback_candidates(source, candidates[0])
-        self.assertEqual([item["id"] for item in result], ["c1", "c2", "c3", "c4", "c5"])
-
 
 class PermissionTests(unittest.TestCase):
     def test_only_owner_can_remove(self):
@@ -261,7 +239,6 @@ class DownloadTests(unittest.TestCase):
                         self.assertIs(raised.exception, error)
                     else:
                         self.assertEqual(raised.exception.code, "audio_invalid")
-                        self.assertIn(raised.exception.code, worker.SOURCE_FALLBACK_CODES)
             self.assertEqual(list(Path(directory).iterdir()), [output.parent])
 
     def test_extract_preserves_worker_error(self):
@@ -452,47 +429,107 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(worker.provider_for_url("https://vk.com/video-1_2"), "vk")
         self.assertEqual(worker.provider_for_url("https://example.com/a.m4a"), "")
 
-    def test_rutube_results_are_parsed(self):
-        payload = {
-            "results": [
-                {
-                    "id": "abc",
-                    "title": "Кино - Группа крови",
-                    "duration": 246,
-                    "video_url": "https://rutube.ru/video/abc/",
-                    "author": {"name": "Кино"},
-                    "is_live": False,
-                },
-                {"id": "live", "title": "Live", "duration": 10, "video_url": "https://rutube.ru/video/live/", "is_live": True},
-            ]
-        }
-        result = worker.parse_rutube_results(payload)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["provider"], "rutube")
-        self.assertEqual(result[0]["pageUrl"], "https://rutube.ru/video/abc/")
-        self.assertEqual(result[0]["uploader"], "Кино")
-        self.assertEqual(result[0]["duration"], 246)
+    def test_unsupported_sources_cannot_be_downloaded_or_selected(self):
+        urls = ("https://rutube.ru/video/abc/", "https://dailymotion.com/video/x1",
+                "https://vimeo.com/123", "https://artist.bandcamp.com/track/x", "https://vk.com/video-1_2")
+        with patch("uncensor_worker.yt_dlp_module") as module, \
+                patch("uncensor_worker.validate_public_https"):
+            for url in urls:
+                with self.subTest(url=url):
+                    self.assertEqual(worker.search_entries(worker.provider_for_url(url), "test"), [])
+                    with self.assertRaises(worker.WorkerError):
+                        worker.download_and_transcode(url, Path("unused"))
+                    with self.assertRaises(worker.WorkerError):
+                        worker.make_candidate({"pageUrl": url, "provider": "youtube"}, "Track", "Artist", 245)
+            module.assert_not_called()
 
-    def test_dailymotion_results_are_parsed(self):
-        payload = {
-            "list": [
-                {
-                    "id": "x1",
-                    "title": "Кино - Группа крови",
-                    "url": "https://www.dailymotion.com/video/x1",
-                    "duration": 246,
-                    "owner.screenname": "Кино",
-                }
-            ]
-        }
-        result = worker.parse_dailymotion_results(payload)
-        self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["provider"], "dailymotion")
-        self.assertEqual(result[0]["uploader"], "Кино")
-        self.assertEqual(result[0]["duration"], 246)
+    def test_provider_metadata_comes_from_validated_url(self):
+        with patch("uncensor_worker.validate_public_https"):
+            candidate = worker.make_candidate({"pageUrl": "https://soundcloud.com/a/b", "provider": "youtube"},
+                                              "Track", "Artist", 245)
+        self.assertEqual(candidate["provider"], "soundcloud")
+
+    def test_resolved_source_must_be_exact_selection(self):
+        url = "https://www.youtube.com/watch?v=chosen"
+        for info in ({"webpage_url": "https://dailymotion.com/video/other"},
+                     {"webpage_url": "https://youtube.com/watch?v=other"},
+                     {"id": "other"}, {"_type": "playlist"}):
+            with self.subTest(info=info), self.assertRaises(worker.WorkerError):
+                worker.validate_source(url, info)
+        worker.validate_source(url, {"webpage_url": "https://youtu.be/chosen", "id": "chosen"})
+        with self.assertRaises(worker.WorkerError):
+            worker.validate_source("https://soundcloud.com/a/chosen", {"webpage_url": "https://soundcloud.com/a/other"})
 
 
 class SearchMetadataTests(unittest.TestCase):
+    def test_parallel_search_preserves_provider_order_and_errors(self):
+        barrier = threading.Barrier(2)
+        youtube_done = threading.Event()
+
+        def search(provider, query):
+            barrier.wait(timeout=3)
+            if provider == "youtube":
+                youtube_done.set()
+            else:
+                self.assertTrue(youtube_done.wait(timeout=3))
+            return [{"provider": provider, "pageUrl": ("https://youtube.com/watch?v=one" if provider == "youtube"
+                                                       else "https://soundcloud.com/a/one"),
+                     "title": "Artist Track", "uploader": "Artist", "duration": 245}]
+
+        job = FakeCheckJob()
+        job.issue_number = 0
+        with patch.dict(os.environ, {"TITLE": "Track", "ARTIST": "Artist", "DURATION": "245"}, clear=True), \
+                patch("uncensor_worker.search_entries", side_effect=search), \
+                patch("uncensor_worker.validate_public_https"), \
+                patch("uncensor_worker.probe_candidate_availability", return_value=""), \
+                patch("uncensor_worker.download_and_transcode") as download:
+            worker.handle_search(None, job)
+            self.assertEqual([item["provider"] for item in job.writes[-1][1]["candidates"]],
+                             ["youtube", "soundcloud"])
+            download.assert_not_called()
+
+            def fail(provider, query):
+                barrier.wait(timeout=3)
+                raise worker.WorkerError("search_failed", provider + " failed")
+
+            with patch("uncensor_worker.search_entries", side_effect=fail):
+                with self.assertRaises(worker.WorkerError) as raised:
+                    worker.handle_search(None, job)
+            self.assertEqual(raised.exception.code, "no_candidates")
+            self.assertLess(raised.exception.detail.index("youtube:"), raised.exception.detail.index("soundcloud:"))
+
+    def test_soundcloud_probes_are_bounded_and_parallel(self):
+        barrier = threading.Barrier(3)
+        lock = threading.Lock()
+        active = 0
+        peak = 0
+
+        def probe(url, provider):
+            nonlocal active, peak
+            self.assertEqual(provider, "soundcloud")
+            with lock:
+                active += 1
+                peak = max(peak, active)
+            barrier.wait(timeout=3)
+            with lock:
+                active -= 1
+            return "blocked" if url.endswith("/0") else ""
+
+        entries = [{"pageUrl": f"https://soundcloud.com/a/{index}", "title": "Artist Track",
+                    "duration": 245, "uploader": "Artist"} for index in range(6)]
+        job = FakeCheckJob()
+        job.issue_number = 0
+        with patch.dict(os.environ, {"TITLE": "Track", "ARTIST": "Artist"}, clear=True), \
+                patch("uncensor_worker.search_entries", side_effect=lambda provider, query: entries if provider == "soundcloud" else []), \
+                patch("uncensor_worker.validate_public_https"), \
+                patch("uncensor_worker.probe_candidate_availability", side_effect=probe):
+            worker.handle_search(None, job)
+        self.assertEqual(peak, 3)
+        candidates = job.writes[-1][1]["candidates"]
+        self.assertTrue(all(item["probed"] for item in candidates))
+        self.assertTrue(candidates[0]["unavailable"])
+        self.assertFalse(any(item.get("unavailable") for item in candidates[1:]))
+
     def test_search_returns_metadata_without_downloading(self):
         class FakeGitHub:
             def __init__(self):
@@ -522,7 +559,7 @@ class SearchMetadataTests(unittest.TestCase):
             }
         ]
         with patch.dict(os.environ, metadata, clear=True), \
-                patch("uncensor_worker.search_entries", side_effect=[entries, [], [], []]), \
+                patch("uncensor_worker.search_entries", side_effect=lambda provider, query: entries if provider == "youtube" else []), \
                 patch("uncensor_worker.validate_public_https") as validate, \
                 patch("uncensor_worker.download_and_transcode") as download:
             job = worker.JobStatus(github, "search", "job-12345678", "owner/repo", "main")
@@ -542,7 +579,7 @@ class SearchMetadataTests(unittest.TestCase):
 
 
 class ConfirmTests(unittest.TestCase):
-    def test_confirm_caps_downloads_and_falls_back_on_decode_failure(self):
+    def test_confirm_never_falls_back_on_selected_download_failure(self):
         candidates = [
             {"id": f"candidate-{index}", "provider": "soundcloud", "pageUrl": f"https://soundcloud.com/a/{index}",
              "durationMs": 245000, "score": 0.9, "warnings": [], "probed": True}
@@ -555,7 +592,7 @@ class ConfirmTests(unittest.TestCase):
 
         job = FakeCheckJob()
         job.track_id = "123456"
-        for code, count in (("audio_invalid", 5), ("tool_missing", 1)):
+        for code in ("audio_invalid", "tool_missing", "source_drm", "download_failed", "cookies_invalid"):
             error = worker.WorkerError(code, "Synthetic failure")
             with self.subTest(code=code), \
                     patch.dict(os.environ, {"SOURCE_JOB_ID": "job-source-12345678", "CANDIDATE_ID": "candidate-0"}, clear=True), \
@@ -567,7 +604,8 @@ class ConfirmTests(unittest.TestCase):
                 with self.assertRaises(worker.WorkerError) as raised:
                     worker.handle_confirm(FakeGitHub(), job)
             self.assertIs(raised.exception, error)
-            self.assertEqual(download.call_count, count)
+            self.assertEqual(download.call_count, 1)
+            self.assertEqual(download.call_args.args[0], candidates[0]["pageUrl"])
 
     def test_confirm_downloads_selected_candidate_and_publishes(self):
         class FakeGitHub:
@@ -638,8 +676,8 @@ class ConfirmTests(unittest.TestCase):
             worker.handle_confirm(github, job)
 
         download.assert_called_once()
-        self.assertEqual(github.asset_name, "123456.m4a")
-        self.assertEqual(github.cleanup, ("123456", "123456.m4a"))
+        self.assertRegex(github.asset_name, r"^123456-job-confirm-12345678-[0-9a-f]{32}\.m4a$")
+        self.assertEqual(github.cleanup, ("123456", github.asset_name))
         self.assertIsNotNone(github.index)
         mapping = github.index["tracks"]["123456"]
         self.assertEqual(mapping["source"]["pageUrl"], "https://www.youtube.com/watch?v=abc123")
@@ -647,7 +685,38 @@ class ConfirmTests(unittest.TestCase):
         self.assertEqual(github.writes[-1][1]["status"], "published")
         self.assertEqual(github.writes[-1][1]["candidateId"], "abc123def4")
 
-    def test_confirm_skips_youtube_after_auth_failure(self):
+        first_name = github.asset_name
+        with tempfile.NamedTemporaryFile(suffix=".m4a") as output, \
+                patch.dict(os.environ, env, clear=True), \
+                patch("uncensor_worker.validate_public_https"), \
+                patch("uncensor_worker.download_and_transcode", return_value=(Path(output.name), 245.0, {})):
+            worker.handle_confirm(github, job)
+        self.assertNotEqual(first_name, github.asset_name)
+        self.assertEqual(github.cleanup, ("123456", github.asset_name))
+
+        for info, duration, code in (({"webpage_url": "https://dailymotion.com/video/other"}, 245, "source_mismatch"),
+                                     ({"id": "other"}, 245, "source_mismatch"),
+                                     ({}, 900, "duration_mismatch")):
+            with self.subTest(code=code, info=info), \
+                    patch.dict(os.environ, env, clear=True), \
+                    patch("uncensor_worker.validate_public_https"), \
+                    patch("uncensor_worker.download_and_transcode", return_value=(Path("unused"), duration, info)), \
+                    patch.object(github, "upload_asset") as upload:
+                with self.assertRaises(worker.WorkerError) as raised:
+                    worker.handle_confirm(github, job)
+                self.assertEqual(raised.exception.code, code)
+                upload.assert_not_called()
+
+        with patch.dict(os.environ, env, clear=True), \
+                patch("uncensor_worker.validate_public_https"), \
+                patch("uncensor_worker.download_and_transcode", return_value=(Path("unused"), 245.0, {})), \
+                patch.object(github, "delete_track_assets", side_effect=worker.WorkerError("github_http", "Delete failed")), \
+                patch.object(job, "write") as write:
+            with self.assertRaises(worker.WorkerError):
+                worker.handle_confirm(github, job)
+            write.assert_not_called()
+
+    def test_confirm_youtube_auth_failure_never_switches_provider(self):
         class FakeGitHub:
             def __init__(self):
                 self.writes = []
@@ -732,11 +801,14 @@ class ConfirmTests(unittest.TestCase):
                     ],
                 ) as download:
             job = worker.JobStatus(github, "confirm", "job-confirm-12345678", "owner/repo", "main")
-            worker.handle_confirm(github, job)
+            with self.assertRaises(worker.WorkerError) as raised:
+                worker.handle_confirm(github, job)
 
-        self.assertEqual(download.call_count, 2)
-        self.assertEqual(github.index["tracks"]["123456"]["source"]["provider"], "soundcloud")
-        self.assertEqual(github.writes[-1][1]["status"], "published")
+        self.assertEqual(raised.exception.code, "youtube_auth")
+        download.assert_called_once()
+        self.assertEqual(download.call_args.args[0], "https://www.youtube.com/watch?v=selected")
+        self.assertIsNone(github.index)
+        self.assertEqual(github.writes, [])
 
 
 class ApprovalTests(unittest.TestCase):
@@ -1019,7 +1091,7 @@ class IssueRequestTests(unittest.TestCase):
         self.payload = {"id": "12345678-abcd", "action": "search", "trackId": "123456",
                         "title": "Track", "artist": "Artist", "duration": 245}
         self.candidate = {"id": "candidate-one", "provider": "youtube",
-                          "pageUrl": "https://8.8.8.8/watch?v=one", "title": "Trusted title"}
+                          "pageUrl": "https://youtube.com/watch?v=one", "title": "Trusted title"}
         self.github.files["jobs/source-12345678.json"] = {
             "status": "ready", "trackId": "123456", "candidates": [self.candidate]}
 
@@ -1033,6 +1105,7 @@ class IssueRequestTests(unittest.TestCase):
                             "GITHUB_REPOSITORY": "owner/repo", "GITHUB_REF_NAME": "main",
                             "GITHUB_TOKEN": "synthetic", "GITHUB_ACTOR": "owner"}, clear=True), \
                     patch("uncensor_worker.download_and_transcode") as download, \
+                    patch("uncensor_worker.socket.getaddrinfo", return_value=[(2, 1, 6, "", ("8.8.8.8", 443))]), \
                     patch("uncensor_worker.download_public_file") as direct_download, \
                     patch.object(worker.GitHubAPI, "cleanup_legacy_previews") as cleanup, \
                     patch.object(worker.GitHubAPI, "update_index") as publish, \
@@ -1052,7 +1125,7 @@ class IssueRequestTests(unittest.TestCase):
     def test_ordinary_user_search_via_main_without_job_env(self):
         entry = {"provider": "youtube", "pageUrl": self.candidate["pageUrl"],
                  "title": "Artist Track", "uploader": "Artist", "duration": 245}
-        with patch("uncensor_worker.search_entries", side_effect=[[entry], [], [], []]):
+        with patch("uncensor_worker.search_entries", side_effect=lambda provider, query: [entry] if provider == "youtube" else []):
             self.assertEqual(self.run_request(use_main=True), 0)
         self.assertEqual([data["status"] for _, data in self.github.writes], ["running", "ready"])
         self.assertEqual(self.github.reservations, [("jobs/12345678-abcd.json", {
@@ -1195,7 +1268,214 @@ class IssueRequestTests(unittest.TestCase):
         self.assertIn("Не удалось обработать заявку", self.github.comments[-1][1])
 
 
+class RemoveTests(unittest.TestCase):
+    def test_removed_status_uses_actual_mapping_url_not_request_input(self):
+        github = Mock()
+        index = {"tracks": {"123": {"audioUrl": "https://example.com/current.m4a"},
+                            "999": {"audioUrl": "https://example.com/other.m4a"}}}
+        github.update_index.side_effect = lambda mutate: (index, mutate(index))
+        github.get_release.return_value = {"id": 7}
+        job = FakeCheckJob()
+        job.track_id = "123"
+        with patch.dict(os.environ, {"GITHUB_ACTOR": "owner", "REPOSITORY_OWNER": "owner",
+                                     "SOURCE_URL": "https://example.com/forged.m4a"}, clear=True):
+            worker.handle_remove(github, job)
+        self.assertEqual(job.writes[-1][0], "removed")
+        self.assertEqual(job.writes[-1][1]["removedAudioUrl"], "https://example.com/current.m4a")
+        self.assertNotIn("123", index["tracks"])
+        self.assertEqual(index["tracks"]["999"]["audioUrl"], "https://example.com/other.m4a")
+        github.delete_track_assets.assert_called_once_with({"id": 7}, "123")
+
+    def test_removed_url_is_reset_on_every_index_retry(self):
+        stale = {"audioUrl": "https://example.com/stale.m4a"}
+        current = {"audioUrl": "https://example.com/current.m4a"}
+        for final_tracks, expected in (({}, ""), ({"123": current}, current["audioUrl"]),
+                                       ({"123": {}}, ""), ({"123": None}, ""),
+                                       ({"123": {"audioUrl": None}}, "")):
+            with self.subTest(final_tracks=final_tracks):
+                github = Mock()
+                github.get_release.return_value = None
+
+                def update(mutator):
+                    mutator({"tracks": {"123": stale}})
+                    index = {"tracks": final_tracks.copy()}
+                    changed = mutator(index)
+                    return index, changed
+
+                github.update_index.side_effect = update
+                job = FakeCheckJob()
+                job.track_id = "123"
+                with patch("uncensor_worker.require_repository_owner"):
+                    worker.handle_remove(github, job)
+                self.assertEqual(job.writes[-1][1]["removedAudioUrl"], expected)
+
+
+class AssetLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self.github = object.__new__(worker.GitHubAPI)
+        self.github.repo = "owner/repo"
+        self.github.api_url = "https://api.github.com"
+        self.github.session = Mock()
+
+    def test_cleanup_lists_every_page_before_deleting_legacy_and_new_names(self):
+        assets = [{"id": index + 1, "name": f"999-other-{index}.m4a"} for index in range(1100)]
+        names = ["123.m4a", "123-cand-abcdef.m4a", "123-job-old-deadbeef.m4a",
+                 "123-job-current-cafebabe.m4a", "1234.m4a"]
+        assets.extend({"id": 2000 + index, "name": name} for index, name in enumerate(names))
+        pages = []
+
+        def get(url, params, **kwargs):
+            pages.append(params["page"])
+            start = (params["page"] - 1) * params["per_page"]
+            return Mock(ok=True, json=lambda: assets[start:start + params["per_page"]])
+
+        self.github.session.get.side_effect = get
+        self.github.session.delete.return_value = Mock(ok=True)
+        removed = self.github.delete_track_assets({"id": 7}, "123", keep_name=names[3])
+        self.assertEqual(pages, list(range(1, 13)))
+        self.assertEqual(removed, 3)
+        self.assertEqual([call.args[0].rsplit("/", 1)[-1] for call in self.github.session.delete.call_args_list],
+                         ["2000", "2001", "2002"])
+        self.github.session.delete.reset_mock()
+        self.assertEqual(self.github.delete_track_assets({"id": 7}, "123"), 4)
+
+    def test_listing_and_deletion_failures_are_not_silenced(self):
+        for payload in ({"message": "bad"}, [None]):
+            with self.subTest(payload=payload):
+                self.github.session.get.return_value = Mock(ok=True, json=lambda: payload)
+                with self.assertRaises(worker.WorkerError):
+                    self.github.list_assets(7)
+        self.github.session.get.return_value = Mock(ok=True, json=lambda: [{"id": 1, "name": "123.m4a"}])
+        self.github.session.delete.return_value = Mock(ok=False, status_code=403, json=lambda: {"message": "Denied"})
+        with self.assertRaises(worker.WorkerError) as raised:
+            self.github.delete_track_assets({"id": 7}, "123")
+        self.assertEqual(raised.exception.status, 403)
+        self.github.session.get.return_value = Mock(ok=False, status_code=500, json=lambda: {})
+        with self.assertRaises(worker.WorkerError):
+            self.github.list_assets(7)
+
+    def test_manual_republish_after_remove_has_new_url_even_for_same_job(self):
+        github = Mock()
+        index = {"tracks": {"999": {"source": {"provider": "dailymotion"}}}}
+        github.update_index.side_effect = lambda mutate: (index, mutate(index))
+        github.ensure_release.return_value = {"id": 7}
+        github.get_release.return_value = {"id": 7}
+        names = []
+
+        def upload(release, name, path, content_type):
+            names.append(name)
+            return {"browser_download_url": "https://github.com/owner/repo/releases/download/library/" + name}
+
+        github.upload_asset.side_effect = upload
+        with patch.dict(os.environ, {"TRACK_ID": "123", "TITLE": "Track", "SOURCE_URL": "https://8.8.8.8/a.m4a",
+                                     "GITHUB_ACTOR": "owner", "REPOSITORY_OWNER": "owner"}, clear=True), \
+                patch("uncensor_worker.download_public_file"), \
+                patch("uncensor_worker.transcode_to_m4a", return_value=245):
+            job = worker.JobStatus(github, "manual", "job-same-12345678", "owner/repo", "main")
+            worker.handle_manual(github, job)
+            first_url = index["tracks"]["123"]["audioUrl"]
+            worker.handle_remove(github, job)
+            self.assertNotIn("123", index["tracks"])
+            worker.handle_manual(github, job)
+            self.assertNotEqual(first_url, index["tracks"]["123"]["audioUrl"])
+            self.assertNotEqual(names[0], names[1])
+            self.assertTrue(all(name.startswith("123-job-same-12345678-") for name in names))
+            self.assertEqual(index["tracks"]["123"]["source"]["provider"], "manual")
+            self.assertEqual(index["tracks"]["999"], {"source": {"provider": "dailymotion"}})
+            self.assertEqual(github.delete_track_assets.call_args_list[-1].kwargs, {"keep_name": names[-1]})
+
+            github.delete_track_assets.side_effect = worker.WorkerError("github_http", "Delete failed")
+            github.upsert_json.reset_mock()
+            with self.assertRaises(worker.WorkerError):
+                worker.handle_manual(github, job)
+            github.upsert_json.assert_not_called()
+            with self.assertRaises(worker.WorkerError):
+                worker.handle_remove(github, job)
+            github.upsert_json.assert_not_called()
+
+    def test_manual_unsupported_provider_rejected_before_submission_or_download(self):
+        github = Mock()
+        github.get_json.return_value = None
+        for owner in (True, False):
+            with patch.dict(os.environ, {"SOURCE_URL": "https://vimeo.com/123"}, clear=True), \
+                    patch("uncensor_worker.validate_public_https"), \
+                    patch("uncensor_worker.is_repository_owner", return_value=owner), \
+                    patch("uncensor_worker.download_and_transcode") as download, \
+                    patch("uncensor_worker.create_submission") as submit:
+                with self.assertRaises(worker.WorkerError) as raised:
+                    worker.handle_manual(github, Mock(track_id="123"))
+                self.assertEqual(raised.exception.code, "source_unsupported")
+                download.assert_not_called()
+                submit.assert_not_called()
+
+
+class ApprovalWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        self.text = (ROOT / ".github/workflows/uncensor-approve.yml").read_text()
+        self.scripts = [textwrap.dedent(part.split("          PY", 1)[0])
+                        for part in self.text.split("          python - <<'PY'\n")[1:]]
+        self.data = {"issueNumber": 42, "action": "manual", "jobId": "job-request-12345678",
+                     "trackId": "123", "sourceUrl": "https://8.8.8.8/a.m4a"}
+
+    def run_script(self, script, data, prepared_track_id="123"):
+        with tempfile.TemporaryDirectory() as directory:
+            submission = Path(directory) / "request.json"
+            output = Path(directory) / "output"
+            submission.write_text(json.dumps(data))
+            with patch.dict(os.environ, {"ISSUE_NUMBER": "42", "GITHUB_OUTPUT": str(output),
+                                         "PREPARED_TRACK_ID": prepared_track_id}, clear=True), \
+                    patch("glob.glob", return_value=[str(submission)]), \
+                    patch.dict(sys.modules, {"cloud.uncensor_worker": worker}), \
+                    patch.object(sys, "path", [str(ROOT), *sys.path]):
+                exec(compile(self.scripts[script], "approval-workflow", "exec"), {})
+            return output.read_text()
+
+    def test_prepare_outputs_only_validated_track_id(self):
+        self.assertEqual(self.run_script(0, self.data), "track_id=123\n")
+        for changes in ({"trackId": "123\nother=value"}, {"trackId": "../escape"},
+                        {"trackId": 123}, {"jobId": "bad"}, {"action": "remove"},
+                        {"issueNumber": 99}):
+            with self.subTest(changes=changes), self.assertRaises((SystemExit, worker.WorkerError)):
+                self.run_script(0, {**self.data, **changes})
+
+    def test_review_rereads_submission_and_rejects_changed_track_or_missing_request(self):
+        output = self.run_script(1, {**self.data, "sourceUrl": "https://8.8.8.8/latest.m4a"})
+        self.assertIn("source_url=https://8.8.8.8/latest.m4a\n", output)
+        self.assertIn("track_id=123\n", output)
+        for data in ({**self.data, "trackId": "456"}, {**self.data, "issueNumber": 99}):
+            with self.subTest(data=data), self.assertRaises(SystemExit):
+                self.run_script(1, data)
+
+    def test_approval_workflows_share_dispatch_track_lock_and_keep_owner_checks(self):
+        self.assertEqual(self.text, (ROOT / "repository-template/.github/workflows/uncensor-approve.yml").read_text())
+        prepare, review = self.text.split("  review:\n", 1)
+        self.assertIn("github.event.sender.login == github.repository_owner &&", prepare)
+        self.assertIn("github.event.issue.state == 'open'", prepare)
+        self.assertIn("contains(github.event.issue.labels.*.name, 'uncensor-request')", prepare)
+        self.assertIn("github.event.label.name == 'uncensor-approved' || github.event.label.name == 'uncensor-rejected'", prepare)
+        self.assertIn("track_id: ${{ steps.request.outputs.track_id }}", prepare)
+        self.assertIn("needs: prepare", review)
+        self.assertIn("group: uncensor-cloud-track-${{ needs.prepare.outputs.track_id }}", review)
+        self.assertIn("cancel-in-progress: false", review)
+        self.assertNotIn("uncensor-approval-", self.text)
+        self.assertNotIn("\nconcurrency:", self.text)
+        self.assertIn('if [ "$ACTOR" != "$OWNER" ]; then', review)
+        self.assertIn("GITHUB_ACTOR: ${{ github.event.sender.login }}", review)
+        self.assertIn("PREPARED_TRACK_ID: ${{ needs.prepare.outputs.track_id }}", review)
+        self.assertLess(review.index("uses: actions/checkout@v4"), review.index("- name: Find request"))
+        self.assertIn("ref: ${{ github.event.repository.default_branch }}", review)
+
+
 class ValidationTests(unittest.TestCase):
+    def test_dispatch_workflows_serialize_track_mutations_without_cancellation(self):
+        for path in (ROOT / ".github/workflows/uncensor-cloud.yml",
+                     ROOT / "repository-template/.github/workflows/uncensor-cloud.yml"):
+            text = path.read_text()
+            self.assertIn("cancel-in-progress: false", text)
+            self.assertIn("fromJSON('[\"confirm\",\"manual\",\"remove\",\"toggle\"]')", text)
+            self.assertIn("format('track-{0}', inputs.track_id)", text)
+            self.assertIn("format('job-{0}', inputs.job_id)", text)
+
     def test_job_and_track_ids(self):
         worker.validate_inputs("search", "12345678-abcd", "123456")
         worker.validate_inputs("check", "12345678-abcd", "0")

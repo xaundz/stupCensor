@@ -111,11 +111,13 @@ export async function applyLibrary(
     index: LibraryIndex,
     disabled: ReadonlySet<string>,
     removed: ReadonlySet<string>,
+    isCurrent: () => boolean = () => true,
 ): Promise<number> {
     const replacements = enabledReplacements(index, disabled, removed)
+    if (!isCurrent()) return 0
     await api.client.clearTrackReplacements(REPLACEMENT_OWNER)
     const count = Object.keys(replacements).length
-    if (!count) return 0
+    if (!count || !isCurrent()) return 0
     await api.client.setTrackReplacements(replacements, REPLACEMENT_OWNER)
     return count
 }

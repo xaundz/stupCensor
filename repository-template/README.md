@@ -32,4 +32,4 @@
 - Аудио публично. Публикуя его, владелец репозитория отвечает за соблюдение авторских прав. Публикуйте только записи, на которые у вас есть права.
 - Приватный репозиторий не подходит для воспроизведения по публичным ссылкам.
 
-stupidCensor 1.2.0 · xaunds · PulseSync Addon Development License 1.1.
+stupidCensor 1.3.0 · xaunds · PulseSync Addon Development License 1.1.

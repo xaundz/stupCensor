@@ -57,8 +57,8 @@ permissions:
   issues: write
 
 concurrency:
-  group: uncensor-cloud-${{ inputs.job_id }}
-  cancel-in-progress: true
+  group: uncensor-cloud-${{ contains(fromJSON('["confirm","manual","remove","toggle"]'), inputs.action) && format('track-{0}', inputs.track_id) || format('job-{0}', inputs.job_id) }}
+  cancel-in-progress: false
 
 jobs:
   process:
