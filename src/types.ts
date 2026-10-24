@@ -80,6 +80,7 @@ export type JobStatus =
     | 'updated'
     | 'removed'
     | 'abandoned'
+    | 'rejected'
 
 export type JobError = {
     code: string
@@ -110,6 +111,9 @@ export type JobRecord = {
     runUrl?: string
     runId?: number
     issueUrl?: string
+    requestUrl?: string
+    requestSourceUrl?: string
+    externalRequest?: boolean
     issueNumber?: number
     requestedBy?: string
     startedAt?: string
@@ -140,6 +144,7 @@ export type RepoInfo = {
     htmlUrl: string
     canPush?: boolean
     canAdmin?: boolean
+    owner?: string
     viewer?: string
 }
 
@@ -162,7 +167,7 @@ export type WorkflowRun = {
 
 export type SetupResult = {
     repo: RepoInfo
-    workflow: WorkflowInfo
+    workflow: WorkflowInfo | null
 }
 
 export type SetupForm = {

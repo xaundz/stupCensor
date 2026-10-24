@@ -3,14 +3,15 @@ import { useEffect, useState } from 'react'
 import { ADDON_AUTHOR, ADDON_NAME, ADDON_VERSION } from '../legacy/constants.ts'
 import { useCurrentTrack } from '../legacy/useCurrentTrack.ts'
 import type { TrackRef } from '../types.ts'
-import { clearNotice } from '../store.ts'
+import { clearNotice, isRepositoryAdmin } from '../store.ts'
 import { LibraryTab } from './LibraryTab.tsx'
 import { JobsTab } from './JobsTab.tsx'
 import { SettingsTab } from './SettingsTab.tsx'
+import { RequestsTab } from './RequestsTab.tsx'
 import { TrackTab } from './TrackTab.tsx'
 import { useStore } from './useStore.ts'
 
-type Tab = 'track' | 'library' | 'jobs' | 'setup'
+type Tab = 'track' | 'library' | 'jobs' | 'setup' | 'requests'
 
 export type PanelController = {
     readonly signal: AbortSignal
@@ -24,18 +25,24 @@ export type PanelProps = {
     initialAction?: 'search' | 'manual'
 }
 
-const TABS: Array<[Tab, string]> = [
-    ['track', 'Трек'],
-    ['library', 'Библиотека'],
-    ['jobs', 'Задания'],
-    ['setup', 'GitHub'],
-]
-
 export function Panel({ controller, initialTrack, initialTab, initialAction }: PanelProps) {
     const state = useStore()
+    const admin = isRepositoryAdmin()
     const current = useCurrentTrack()
     const [tab, setTab] = useState<Tab>(initialTab ?? 'track')
     const [selected, setSelected] = useState<TrackRef | null>(initialTrack ?? null)
+    const activeTab = tab === 'requests' && !admin ? 'setup' : tab
+    const tabs: Array<[Tab, string]> = [
+        ['track', 'Трек'],
+        ['library', 'Библиотека'],
+        ['jobs', admin ? 'Задания' : 'Мои заявки'],
+        ...(admin ? [['requests', 'Заявки'] as [Tab, string]] : []),
+        ['setup', admin ? 'Админ-панель' : 'GitHub'],
+    ]
+
+    useEffect(() => {
+        if (!admin && tab === 'requests') setTab('setup')
+    }, [admin, tab])
 
     const currentRef: TrackRef | null = current
         ? {
@@ -80,8 +87,8 @@ export function Panel({ controller, initialTrack, initialTab, initialAction }: P
                     </div>
                 </div>
                 <div className="uc-header-actions">
-                    <span className={`uc-conn ${state.config ? (state.hasToken ? 'uc-ok' : 'uc-warn') : 'uc-warn'}`}>
-                        {state.config ? (state.hasToken ? 'GitHub подключён' : 'Только чтение') : 'Не подключён'}
+                    <span className={`uc-conn ${state.config ? 'uc-ok' : 'uc-warn'}`}>
+                        {state.config ? (admin ? 'Владелец' : 'Общая библиотека') : 'Не подключён'}
                     </span>
                     <button type="button" className="uc-close" aria-label="Закрыть" onClick={() => controller.close()}>
                         ×
@@ -90,11 +97,11 @@ export function Panel({ controller, initialTrack, initialTab, initialAction }: P
             </header>
 
             <nav className="uc-tabs" aria-label={`Разделы ${ADDON_NAME}`}>
-                {TABS.map(([value, label]) => (
+                {tabs.map(([value, label]) => (
                     <button
                         type="button"
                         key={value}
-                        className={tab === value ? 'uc-tab uc-tab-active' : 'uc-tab'}
+                        className={activeTab === value ? 'uc-tab uc-tab-active' : 'uc-tab'}
                         onClick={() => setTab(value)}
                     >
                         {label}
@@ -120,7 +127,7 @@ export function Panel({ controller, initialTrack, initialTab, initialAction }: P
             ) : null}
 
             <main className="uc-body">
-                {tab === 'track' ? (
+                {activeTab === 'track' ? (
                     <TrackTab
                         initialTrack={selected}
                         currentTrack={currentRef}
@@ -128,11 +135,12 @@ export function Panel({ controller, initialTrack, initialTab, initialAction }: P
                         onOpenJobs={() => setTab('jobs')}
                     />
                 ) : null}
-                {tab === 'library' ? (
+                {activeTab === 'library' ? (
                     <LibraryTab onOpenTrack={openTrack} onOpenSetup={() => setTab('setup')} />
                 ) : null}
-                {tab === 'jobs' ? <JobsTab onOpenTrack={openTrack} /> : null}
-                {tab === 'setup' ? <SettingsTab /> : null}
+                {activeTab === 'jobs' ? <JobsTab onOpenTrack={openTrack} /> : null}
+                {activeTab === 'requests' && admin ? <RequestsTab key={`${state.config?.repo}:${state.repoInfo?.viewer}`} /> : null}
+                {activeTab === 'setup' ? <SettingsTab /> : null}
             </main>
 
             <footer className="uc-footer">

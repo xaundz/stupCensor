@@ -105,7 +105,7 @@ export class GitHubClient {
         }
         if (response.status === 403) {
             return new GitHubError(
-                'GitHub запретил действие. Проверьте права токена: Contents (Read and write) и Actions (Read and write).',
+                'GitHub запретил действие. Проверьте права токена для этого действия: Contents, Actions или Issues.',
                 403,
                 'forbidden',
             )
@@ -131,6 +131,7 @@ export class GitHubClient {
             default_branch?: string
             html_url?: string
             permissions?: { push?: boolean; admin?: boolean }
+            owner?: { login?: string }
         }
         return {
             fullName: String(data.full_name || this.repo),
@@ -138,19 +139,17 @@ export class GitHubClient {
             defaultBranch: String(data.default_branch || 'main'),
             htmlUrl: String(data.html_url || `https://github.com/${this.repo}`),
             canPush: data.permissions?.push,
-            canAdmin: data.permissions?.admin === true,
+            canAdmin: false,
+            owner: String(data.owner?.login || data.full_name?.split('/')[0] || this.repo.split('/')[0]),
         }
     }
 
     async getAccessInfo(): Promise<RepoInfo> {
         const repo = await this.getRepo()
         if (this.token) {
-            try {
-                repo.viewer = await this.getTokenLogin()
-            } catch {
-                // Repo access is still useful if the user endpoint is rate-limited.
-            }
+            repo.viewer = await this.getTokenLogin()
         }
+        repo.canAdmin = Boolean(this.token && repo.viewer && repo.viewer.toLowerCase() === repo.owner?.toLowerCase())
         return repo
     }
 
@@ -198,8 +197,8 @@ export class GitHubClient {
                 'private_repo',
             )
         }
-        const workflow = await this.getWorkflow()
-        if (workflow.state !== 'active') {
+        const workflow = repo.canAdmin ? await this.getWorkflow() : null
+        if (workflow && workflow.state !== 'active') {
             throw new GitHubError(
                 `Workflow «${workflow.name}» не активен (${workflow.state}). Включите Actions в настройках репозитория.`,
                 422,
@@ -262,6 +261,9 @@ export class GitHubClient {
         if (!this.token) {
             throw new GitHubError('Для запуска задания нужен GitHub-токен.', 401, 'token_required')
         }
+        if (!(await this.getAccessInfo()).canAdmin) {
+            throw new GitHubError('Только подтверждённый владелец может запускать Actions.', 403, 'owner_required')
+        }
         await this.request(`/repos/${this.repo}/actions/workflows/${WORKFLOW_FILE}/dispatches`, {
             method: 'POST',
             body: {
@@ -273,6 +275,15 @@ export class GitHubClient {
     }
 
     async getJob(jobId: string): Promise<Record<string, unknown> | null> {
+        if (!this.token) {
+            const response = await this.api.net.fetch(
+                `https://raw.githubusercontent.com/${this.repo}/${encodeURIComponent(this.branch || 'main')}/jobs/${encodeURIComponent(jobId)}.json?t=${Date.now()}`,
+                { timeoutMs: 15000 },
+            )
+            if (response.status === 404) return null
+            if (!response.ok) throw new GitHubError(`Job: HTTP ${response.status}`, response.status, 'job_http')
+            return await response.json() as Record<string, unknown>
+        }
         try {
             const response = await this.request(
                 `/repos/${this.repo}/contents/jobs/${encodeURIComponent(jobId)}.json${this.refQuery()}`,

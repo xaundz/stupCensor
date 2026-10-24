@@ -34,6 +34,8 @@ import {
 import { GitHubClient, GitHubError } from './lib/github.ts'
 import { resolveTrack } from './lib/tracks.ts'
 import { settings } from './legacy/settings.ts'
+import { SHARED_REPO } from './legacy/constants.ts'
+import { buildRequestUrl } from './lib/requests.ts'
 
 const CONFIG_KEY = 'stupidcensor.config.v1'
 const TOKEN_KEY = 'stupidcensor.token.v1'
@@ -87,6 +89,7 @@ let active = false
 let token = ''
 let polling = false
 let refreshing = false
+let accessRevision = 0
 const listeners = new Set<() => void>()
 
 export function subscribe(listener: () => void): () => void {
@@ -115,7 +118,7 @@ function requireApi(): AddonApi {
 function apiFor(api: AddonApi): GitHubClient {
     const config = state.config
     if (!config) throw new Error('Сначала укажите GitHub-репозиторий в разделе «GitHub».')
-    return new GitHubClient(api, config.repo, token, config.branch)
+    return new GitHubClient(api, config.repo, isRepositoryAdmin() ? token : '', config.branch)
 }
 
 function storageSafe<T>(value: T): T {
@@ -213,7 +216,7 @@ export async function initialize(api: AddonApi): Promise<void> {
                   rememberToken: rawConfig.rememberToken !== false,
                   publicVerified: rawConfig.publicVerified === true,
               }
-            : null
+            : { repo: SHARED_REPO, branch: 'main', rememberToken: false, publicVerified: false }
     token = config && config.rememberToken && typeof rawToken === 'string' ? rawToken : ''
     const disabled = validSet(rawDisabled)
     const removed = validSet(rawRemoved)
@@ -225,13 +228,14 @@ export async function initialize(api: AddonApi): Promise<void> {
                   ...item,
                   status: item.status === 'published' || item.status === 'failed' || item.status === 'ready' ||
                       item.status === 'awaiting_approval' || item.status === 'updated' || item.status === 'removed' ||
-                      item.status === 'abandoned'
+                       item.status === 'abandoned' || item.status === 'rejected'
                       ? item.status
                       : item.status === 'running'
                           ? 'running'
                           : 'queued',
                   runUrl: typeof item.runUrl === 'string' && isStableHttpsUrl(item.runUrl) ? item.runUrl : undefined,
-                  issueUrl: typeof item.issueUrl === 'string' && isStableHttpsUrl(item.issueUrl) ? item.issueUrl : undefined,
+                   issueUrl: typeof item.issueUrl === 'string' && isStableHttpsUrl(item.issueUrl) ? item.issueUrl : undefined,
+                   requestUrl: undefined,
               }) as JobRecord)
         : []
     let cached: CachedLibrary | null = null
@@ -250,6 +254,8 @@ export async function initialize(api: AddonApi): Promise<void> {
     }
     setState({
         hydrated: true,
+        repoInfo: null,
+        workflow: null,
         config,
         hasToken: Boolean(token),
         disabled,
@@ -259,6 +265,16 @@ export async function initialize(api: AddonApi): Promise<void> {
         libraryFetchedAt: cached?.fetchedAt ?? null,
         libraryFromCache: Boolean(cached),
     })
+    accessRevision++
+    if (!rawConfig) await persistConfig(config)
+    for (const job of jobs) {
+        if (!job.externalRequest) continue
+        try {
+            job.requestUrl = buildRequestUrl(job, job.requestSourceUrl || job.manualUrl)
+        } catch {
+            job.requestUrl = undefined
+        }
+    }
 
     if (cached && settings.store.autoApply) {
         try {
@@ -286,17 +302,33 @@ export async function initialize(api: AddonApi): Promise<void> {
 }
 
 export function isRepositoryAdmin(): boolean {
-    return state.repoInfo?.canAdmin === true
+    const info = state.repoInfo
+    return Boolean(state.hasToken && token && info?.canAdmin && info.viewer &&
+        info.viewer.toLowerCase() === (info.owner || info.fullName.split('/')[0]).toLowerCase() &&
+        info.fullName.toLowerCase() === state.config?.repo.toLowerCase())
 }
 
 export async function refreshRepoAccess(options: { silent?: boolean } = {}): Promise<RepoInfo | null> {
     const api = requireApi()
     if (!state.config) return null
+    const revision = ++accessRevision
+    const config = state.config
+    const currentToken = token
+    setState({ repoInfo: null, workflow: null })
     try {
-        const info = await apiFor(api).getAccessInfo()
+        const client = new GitHubClient(api, config.repo, currentToken, config.branch)
+        const info = await client.getAccessInfo()
+        if (revision !== accessRevision || !active) return null
         setState({ repoInfo: info })
+        if (info.canAdmin) {
+            const workflow = await client.getWorkflow()
+            if (revision !== accessRevision || !active) return null
+            setState({ workflow })
+        }
         return info
     } catch (error) {
+        if (revision !== accessRevision || !active) return null
+        setState({ repoInfo: null, workflow: null })
         if (!options.silent) setState({ lastError: errorText(error) })
         return null
     }
@@ -310,10 +342,12 @@ export async function saveSetup(form: SetupForm, options: { readOnly?: boolean }
     const effectiveToken = options.readOnly ? '' : suppliedToken || token
     const sameRepo = state.config?.repo === repo
     const rememberToken = options.readOnly ? false : form.rememberToken !== false
-    setState({ busy: 'setup', lastError: '' })
+    const revision = ++accessRevision
+    setState({ busy: 'setup', lastError: '', repoInfo: null, workflow: null, hasToken: false })
     try {
         const client = new GitHubClient(api, repo, effectiveToken, '')
         const result = await client.verifySetup()
+        if (revision !== accessRevision || !active) throw new Error('Подключение GitHub изменилось. Повторите вход.')
         token = effectiveToken
         const config: GitHubConfig = {
             repo,
@@ -324,6 +358,7 @@ export async function saveSetup(form: SetupForm, options: { readOnly?: boolean }
         await persistConfig(config)
         if (rememberToken && token) await api.storage.set(TOKEN_KEY, token)
         else await api.storage.remove(TOKEN_KEY)
+        if (revision !== accessRevision || !active) throw new Error('Подключение GitHub изменилось. Повторите вход.')
         if (!sameRepo) {
             await api.storage.remove(CACHE_KEY)
             setState({ library: EMPTY_INDEX, libraryFetchedAt: null, libraryFromCache: false })
@@ -342,7 +377,7 @@ export async function saveSetup(form: SetupForm, options: { readOnly?: boolean }
         await refreshLibrary({ silent: true })
         return result
     } catch (error) {
-        setState({ busy: '', lastError: errorText(error) })
+        if (revision === accessRevision) setState({ busy: '', lastError: errorText(error), repoInfo: null, workflow: null })
         throw error
     }
 }
@@ -350,6 +385,8 @@ export async function saveSetup(form: SetupForm, options: { readOnly?: boolean }
 export async function disconnectGitHub(forgetRepo: boolean): Promise<void> {
     const api = requireApi()
     token = ''
+    accessRevision++
+    setState({ hasToken: false, repoInfo: null, workflow: null })
     await api.storage.remove(TOKEN_KEY)
     if (forgetRepo) {
         await persistConfig(null)
@@ -383,7 +420,7 @@ export async function refreshLibrary(options: { silent?: boolean } = {}): Promis
     if (!options.silent) setState({ busy: 'library', lastError: '' })
     try {
         const client = apiFor(api)
-        const index = await client.getIndex()
+        const index = await client.getPublicIndex()
         if (!index) {
             setState({ busy: '', libraryFromCache: false, lastError: 'list.json не найден в репозитории.' })
             if (!options.silent) pushNotice('error', 'list.json не найден. Загрузите пример индекса в корень репозитория.')
@@ -479,7 +516,7 @@ function updateJobLocal(jobId: string, patch: Partial<JobRecord>): void {
 async function dispatchJob(api: AddonApi, job: JobRecord, inputs: Record<string, string>): Promise<void> {
     const config = state.config
     if (!config) throw new Error('Сначала настройте GitHub.')
-    if (!token) throw new Error('Для поиска и публикации нужен GitHub-токен. Режим чтения не запускает Actions.')
+    if (!isRepositoryAdmin()) throw new Error('Только подтверждённый владелец может запускать Actions.')
     try {
         const client = new GitHubClient(api, config.repo, token, config.branch)
         await client.dispatch(job.action, { job_id: job.id, ...inputs })
@@ -490,6 +527,23 @@ async function dispatchJob(api: AddonApi, job: JobRecord, inputs: Record<string,
         notifyUser('error', normalized.message)
         throw error
     }
+}
+
+function queueBrowserRequest(job: JobRecord, sourceUrl = ''): JobRecord {
+    job.externalRequest = true
+    job.auto = false
+    job.requestUrl = buildRequestUrl(job, sourceUrl)
+    job.requestSourceUrl = sourceUrl || undefined
+    job.expiresAt = new Date(Date.now() + 24 * 60 * 60_000).toISOString()
+    job.note = 'Черновик открыт в браузере. Нужно вручную отправить страницу GitHub (Submit new issue); открытие страницы не отправляет заявку.'
+    addJob(job)
+    pushNotice('info', job.note)
+    try {
+        window.open(job.requestUrl, '_blank', 'noopener,noreferrer')
+    } catch {
+        // The exposed requestUrl allows reopening when the browser blocks the popup.
+    }
+    return job
 }
 
 export async function startSearch(
@@ -505,10 +559,11 @@ export async function startSearch(
         'search',
         { id: track.id, title: meta.title, artist: meta.artist },
         {
-            auto: options.auto === true,
+            auto: isRepositoryAdmin() && options.auto === true,
             trackDurationMs: Math.max(0, Math.round(meta.durationMs || 0)),
         },
     )
+    if (!isRepositoryAdmin()) return queueBrowserRequest(job, sourceUrl.trim())
     addJob(job)
     await dispatchJob(api, job, {
         track_id: track.id,
@@ -560,7 +615,6 @@ function autoCandidate(job: JobRecord): SourceCandidate | null {
 export async function startAutoReplace(track: TrackRef): Promise<JobRecord | null> {
     const api = requireApi()
     if (!state.config) throw new Error('Сначала подключите GitHub-репозиторий в меню stupidCensor.')
-    if (!token) throw new Error('Для автопоиска нужен GitHub-токен. Откройте настройки stupidCensor.')
     if (!isYandexTrackId(track.id)) throw new Error('Не удалось определить ID трека Яндекс Музыки.')
 
     const existing = jobForTrack(track.id, ['search'])
@@ -590,7 +644,7 @@ export async function startAutoReplace(track: TrackRef): Promise<JobRecord | nul
     }
     notifyUser('info', `Ищу запись без цензуры: ${meta.artist} — ${meta.title}.`)
     const job = await startSearch(resolved, meta, '', { auto: true })
-    pushNotice('info', 'Автопоиск запущен в GitHub Actions. Можно продолжать слушать музыку.')
+    if (!job.externalRequest) pushNotice('info', 'Автопоиск запущен в GitHub Actions. Можно продолжать слушать музыку.')
     return job
 }
 
@@ -603,6 +657,7 @@ export function markJobReviewed(jobId: string): void {
 
 export async function confirmCandidate(sourceJob: JobRecord, candidate: SourceCandidate): Promise<JobRecord> {
     const api = requireApi()
+    if (sourceJob.repo !== state.config?.repo) throw new Error('Задание относится к другому репозиторию.')
     if (!sourceJob.candidates?.some(item => item.id === candidate.id)) {
         throw new Error('Кандидат не найден в исходном задании.')
     }
@@ -621,8 +676,9 @@ export async function confirmCandidate(sourceJob: JobRecord, candidate: SourceCa
     const job = createJob(
         'confirm',
         { id: sourceJob.trackId, title: sourceJob.trackTitle, artist: sourceJob.trackArtist },
-        { sourceJobId: sourceJob.id, candidateId: candidate.id },
+        { sourceJobId: sourceJob.id, candidateId: candidate.id, trackDurationMs: candidate.durationMs },
     )
+    if (!isRepositoryAdmin()) return queueBrowserRequest(job)
     addJob(job)
     await dispatchJob(api, job, {
         track_id: sourceJob.trackId,
@@ -632,15 +688,12 @@ export async function confirmCandidate(sourceJob: JobRecord, candidate: SourceCa
         source_job_id: sourceJob.id,
         candidate_id: candidate.id,
     })
-    if (!isRepositoryAdmin()) {
-        pushNotice('info', 'Заявка отправлена владельцу. Публикация начнётся после подтверждения в GitHub.')
-    }
     return job
 }
 
 export async function startAuthCheck(): Promise<JobRecord> {
     const api = requireApi()
-    if (!state.hasToken) throw new Error('Для проверки YouTube нужен GitHub-токен.')
+    if (!isRepositoryAdmin()) throw new Error('Проверка YouTube доступна только владельцу репозитория.')
     const job = createJob('check', { id: '0', title: 'Проверка YouTube', artist: '' })
     addJob(job)
     await dispatchJob(api, job, {
@@ -672,6 +725,8 @@ export async function startManualAdd(track: TrackRef, meta: TrackSearchMeta, dir
     }
     const job = createJob('manual', { id: track.id, title: meta.title, artist: meta.artist })
     job.manualUrl = url
+    job.trackDurationMs = meta.durationMs
+    if (!isRepositoryAdmin()) return queueBrowserRequest(job, url)
     addJob(job)
     await dispatchJob(api, job, {
         track_id: track.id,
@@ -680,9 +735,6 @@ export async function startManualAdd(track: TrackRef, meta: TrackSearchMeta, dir
         duration: String(Math.max(0, Math.round(meta.durationMs / 1000))),
         source_url: url,
     })
-    if (!isRepositoryAdmin()) {
-        pushNotice('info', 'Заявка на ручную ссылку отправлена владельцу. Публикация начнётся после подтверждения.')
-    }
     return job
 }
 
@@ -691,7 +743,7 @@ export async function startBatchSearch(
     limit = 10,
 ): Promise<{ started: number; skipped: number; failed: number }> {
     const api = requireApi()
-    if (!token) throw new Error('Для массового поиска нужен GitHub-токен.')
+    if (!isRepositoryAdmin()) throw new Error('Массовый поиск доступен только владельцу. Для отдельного трека откройте заявку в браузере.')
     if (!state.config) throw new Error('Сначала подключите GitHub-репозиторий.')
     const unique: TrackRef[] = []
     const seen = new Set<string>()
@@ -887,7 +939,7 @@ function safeJobUrl(value: unknown, fallback: string | undefined): string | unde
 
 function mergeRemoteJob(job: JobRecord, remote: Record<string, unknown>): JobRecord {
     const statusRaw = sanitizeText(remote.status, 30)
-    const status = (['queued', 'running', 'ready', 'awaiting_approval', 'published', 'failed', 'updated', 'removed', 'abandoned'] as const).includes(
+    const status = (['queued', 'running', 'ready', 'awaiting_approval', 'published', 'failed', 'updated', 'removed', 'abandoned', 'rejected'] as const).includes(
         statusRaw as JobRecord['status'],
     )
         ? (statusRaw as JobRecord['status'])
@@ -929,7 +981,7 @@ function mergeRemoteJob(job: JobRecord, remote: Record<string, unknown>): JobRec
         issueNumber: Math.max(0, Number(remote.issueNumber) || job.issueNumber || 0) || undefined,
         requestedBy: sanitizeText(remote.requestedBy, 80) || job.requestedBy,
         startedAt,
-        finishedAt: ['ready', 'published', 'failed', 'updated', 'removed', 'abandoned'].includes(status)
+        finishedAt: ['ready', 'published', 'failed', 'updated', 'removed', 'abandoned', 'rejected'].includes(status)
             ? remoteUpdatedAt || job.finishedAt
             : job.finishedAt,
         etaSeconds: Math.max(0, Number(remote.etaSeconds) || job.etaSeconds || 0) || undefined,
@@ -953,7 +1005,7 @@ async function handleTerminalJob(job: JobRecord): Promise<void> {
         return
     }
     if (job.status === 'ready' && !job.processed) {
-        if (job.auto) {
+        if (job.auto && !job.externalRequest && isRepositoryAdmin()) {
             const candidate = autoCandidate(job)
             if (candidate) {
                 updateJobLocal(job.id, { processed: true, autoConfirmed: true })
@@ -1007,7 +1059,7 @@ async function handleTerminalJob(job: JobRecord): Promise<void> {
         }
         return
     }
-    if (job.status === 'failed' && !job.processed) {
+    if ((job.status === 'failed' || job.status === 'rejected') && !job.processed) {
         updateJobLocal(job.id, { processed: true })
         const message = job.error?.message || 'Задание завершилось с ошибкой.'
         notifyUser('error', message)
@@ -1024,16 +1076,24 @@ async function pollJob(job: JobRecord): Promise<void> {
     const api = apiRef
     if (!api) return
     const config = state.config
-    if (!config) return
-    const client = new GitHubClient(api, job.repo, token, job.branch)
+    if (!config || job.repo !== config.repo || !state.jobs.some(item => item.id === job.id)) return
+    if (job.externalRequest && (job.cancelRequested || ['abandoned', 'rejected'].includes(job.status))) return
+    const ageMs = Date.now() - new Date(job.createdAt).getTime()
+    const expiry = job.issueUrl && job.expiresAt ? Date.parse(job.expiresAt) : new Date(job.createdAt).getTime() + 24 * 60 * 60_000
+    if (job.externalRequest && (!Number.isFinite(expiry) || Date.now() > expiry)) {
+        updateJobLocal(job.id, { status: 'abandoned', processed: true, note: 'Срок локального отслеживания истёк. Статус заявки можно проверить в GitHub.' })
+        return
+    }
+    const client = new GitHubClient(api, job.repo, job.externalRequest ? '' : token, job.branch)
     const remote = await client.getJob(job.id)
+    if (!active || job.repo !== state.config?.repo || !state.jobs.some(item => item.id === job.id && !item.cancelRequested)) return
     if (remote) {
         const merged = mergeRemoteJob(job, remote)
         updateJobLocal(job.id, merged)
         await handleTerminalJob(merged)
         return
     }
-    const ageMs = Date.now() - new Date(job.createdAt).getTime()
+    if (job.externalRequest || job.status === 'awaiting_approval') return
     if (ageMs > 20_000) {
         const run = await client.getRunForJob(job.id)
         if (run) {
@@ -1093,8 +1153,10 @@ async function pollJob(job: JobRecord): Promise<void> {
 }
 
 export async function pollPendingJobs(): Promise<void> {
-    if (polling || !active || !token) return
-    const pending = state.jobs.filter(job => job.status === 'queued' || job.status === 'running')
+    if (polling || !active) return
+    const pending = state.jobs.slice(0, 30).filter(job =>
+        (job.externalRequest || token) && !job.cancelRequested &&
+        ['queued', 'running', 'awaiting_approval'].includes(job.status))
     if (!pending.length) return
     polling = true
     try {
@@ -1122,7 +1184,7 @@ export async function refreshJob(jobId: string): Promise<void> {
     const job = state.jobs.find(item => item.id === jobId)
     if (!job) return
     if (job.repo !== state.config?.repo) throw new Error('Задание относится к другому репозиторию.')
-    if (!token) throw new Error('Для проверки статуса нужен GitHub-токен.')
+    if (!token && !job.externalRequest) throw new Error('Для проверки статуса нужен GitHub-токен.')
     await pollJob(job)
 }
 
@@ -1130,8 +1192,13 @@ export async function cancelJob(jobId: string): Promise<void> {
     const api = requireApi()
     const job = state.jobs.find(item => item.id === jobId)
     if (!job) return
+    if (job.externalRequest) {
+        forgetJob(jobId)
+        pushNotice('info', 'Отменено только локальное отслеживание. Заявка и действия в GitHub не отменены.')
+        return
+    }
     if (job.status !== 'queued' && job.status !== 'running') return
-    if (!token) throw new Error('Для отмены задания нужен GitHub-токен.')
+    if (!isRepositoryAdmin()) throw new Error('Отмена Actions доступна только владельцу репозитория.')
     const client = new GitHubClient(api, job.repo, token, job.branch)
     let runId = job.runId
     if (!runId) {
@@ -1187,4 +1254,60 @@ export function jobSummary(job: JobRecord): string {
 
 export function replaceableTrackFromJob(job: JobRecord): TrackRef {
     return { id: job.trackId, title: job.trackTitle, artist: job.trackArtist }
+}
+
+export async function listReviewRequests() {
+    if (!isRepositoryAdmin()) throw new Error('Заявки доступны только подтверждённому владельцу.')
+    const revision = accessRevision
+    const client = apiFor(requireApi())
+    const requests: Array<{ number: number; title: string; requester: string; url: string; body: string }> = []
+    for (let page = 1; ; page++) {
+        const response = await client.request(`/repos/${client.repo}/issues?state=open&labels=uncensor-request&per_page=100&page=${page}`)
+        const issues = await response.json() as Array<{
+            number: number
+            title?: string
+            body?: string | null
+            user?: { login?: string } | null
+            pull_request?: unknown
+            labels?: Array<string | { name?: string }>
+        }>
+        if (revision !== accessRevision || !active || !isRepositoryAdmin()) throw new Error('Вход владельца изменился. Обновите заявки.')
+        for (const issue of issues) {
+            const labels = (issue.labels || []).map(label => typeof label === 'string' ? label : label.name)
+            if (issue.pull_request || labels.includes('uncensor-approved') || labels.includes('uncensor-rejected')) continue
+            if (!Number.isSafeInteger(issue.number) || issue.number <= 0) continue
+            requests.push({
+                number: issue.number,
+                title: sanitizeText(issue.title, 500) || `Заявка #${issue.number}`,
+                requester: sanitizeText(issue.user?.login, 100) || 'неизвестен',
+                url: `https://github.com/${client.repo}/issues/${issue.number}`,
+                body: typeof issue.body === 'string' ? issue.body : '',
+            })
+        }
+        if (issues.length < 100) return requests
+    }
+}
+
+export async function reviewRequest(issueNumber: number, decision: 'approved' | 'rejected'): Promise<void> {
+    if (!isRepositoryAdmin()) throw new Error('Решение может отправить только подтверждённый владелец.')
+    if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0 || !['approved', 'rejected'].includes(decision)) {
+        throw new Error('Некорректное решение по заявке.')
+    }
+    const revision = accessRevision
+    const client = apiFor(requireApi())
+    const access = await client.getAccessInfo()
+    if (!access.canAdmin || revision !== accessRevision || !active || !isRepositoryAdmin()) {
+        throw new Error('Вход владельца изменился. Войдите снова.')
+    }
+    const path = `/repos/${client.repo}/issues/${issueNumber}`
+    const response = await client.request(path)
+    const issue = await response.json() as { state?: string; pull_request?: unknown; labels?: Array<string | { name?: string }> }
+    const labels = (issue.labels || []).map(label => typeof label === 'string' ? label : label.name)
+    if (issue.state !== 'open' || issue.pull_request || !labels.includes('uncensor-request') ||
+        labels.includes('uncensor-approved') || labels.includes('uncensor-rejected')) {
+        throw new Error('Заявка уже рассмотрена или недоступна. Обновите список.')
+    }
+    if (revision !== accessRevision || !active || !isRepositoryAdmin()) throw new Error('Вход владельца изменился.')
+    await client.request(`${path}/labels`, { method: 'POST', body: { labels: [`uncensor-${decision}`] } })
+    if (revision !== accessRevision || !active || !isRepositoryAdmin()) throw new Error('Вход владельца изменился. Проверьте решение в GitHub.')
 }

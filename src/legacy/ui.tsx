@@ -191,7 +191,7 @@ export function mountLegacyUi(context: LegacyContext) {
         }
         try {
             const job = await startAutoReplace(track)
-            if (job?.status === 'ready') {
+            if (job && (job.status === 'ready' || job.externalRequest)) {
                 await openPanel({ track: replaceableTrackFromJob(job), initialAction: 'search' })
             }
         } catch (error) {

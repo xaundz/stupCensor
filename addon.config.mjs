@@ -3,7 +3,7 @@ const addonConfig = {
     directoryName: 'stupid-censor',
     name: 'stupidCensor',
     description: 'Облачная библиотека замен для заблюренных треков Яндекс Музыки.',
-    version: '1.1.4',
+    version: '1.2.0',
     author: 'xaunds',
     image: 'Assets/logo.png',
     banner: 'Assets/banner.png',

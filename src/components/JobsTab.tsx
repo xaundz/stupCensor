@@ -131,7 +131,7 @@ export function JobsTab({ onOpenTrack }: Props) {
 
     return (
         <div className="uc-stack">
-            <section className="uc-card">
+            {admin ? <section className="uc-card">
                 <div className="uc-section-head">
                     <div>
                         <div className="uc-eyebrow">Текущая очередь</div>
@@ -160,13 +160,13 @@ export function JobsTab({ onOpenTrack }: Props) {
                 </div>
                 {batchResult ? <div className="uc-check uc-ok-text">{batchResult}</div> : null}
                 {batchError ? <div className="uc-inline-error">{batchError}</div> : null}
-            </section>
+            </section> : null}
 
             <section className="uc-card">
                 <div className="uc-section-head">
                     <div>
-                        <div className="uc-eyebrow">GitHub Actions</div>
-                        <div className="uc-section-title">Задания</div>
+                        <div className="uc-eyebrow">{admin ? 'GitHub Actions' : 'Проверка владельцем'}</div>
+                        <div className="uc-section-title">{admin ? 'Задания' : 'Мои заявки'}</div>
                     </div>
                     <div className="uc-segmented">
                         <button type="button" className={filter === 'active' ? 'uc-segmented-active' : ''} onClick={() => setFilter('active')}>
@@ -234,6 +234,11 @@ export function JobsTab({ onOpenTrack }: Props) {
                                     ) : null}
                                 </div>
                                 <div className="uc-list-actions">
+                                    {job.externalRequest && !job.issueUrl && job.requestUrl && isPending ? (
+                                        <a className="uc-btn uc-btn-primary uc-btn-small" href={job.requestUrl} target="_blank" rel="noreferrer">
+                                            Отправить в GitHub
+                                        </a>
+                                    ) : null}
                                     {job.action === 'search' && (job.status === 'ready' || isPending) ? (
                                         <button
                                             type="button"
@@ -269,7 +274,7 @@ export function JobsTab({ onOpenTrack }: Props) {
                                             disabled={cancelling === job.id}
                                             onClick={() => void cancel(job)}
                                         >
-                                            {cancelling === job.id ? 'Отменяем…' : 'Отменить'}
+                                            {cancelling === job.id ? 'Отменяем…' : job.externalRequest ? 'Скрыть отслеживание' : 'Отменить'}
                                         </button>
                                     ) : (
                                         <button type="button" className="uc-link uc-small" onClick={() => forgetJob(job.id)}>

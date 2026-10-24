@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 
 import { SHARED_REPO } from '../legacy/constants.ts'
 import { settings } from '../legacy/settings.ts'
-import { disconnectGitHub, refreshRepoAccess, saveSetup, startAuthCheck } from '../store.ts'
+import { disconnectGitHub, isRepositoryAdmin, refreshRepoAccess, saveSetup, startAuthCheck } from '../store.ts'
 import { useStore } from './useStore.ts'
 
 const TOKEN_URL = 'https://github.com/settings/personal-access-tokens/new'
@@ -10,7 +10,7 @@ const TOKEN_URL = 'https://github.com/settings/personal-access-tokens/new'
 export function SettingsTab() {
     const state = useStore()
     const preferences = settings.use()
-    const [repo, setRepo] = useState(state.config?.repo || '')
+    const [repo, setRepo] = useState(state.config?.repo || SHARED_REPO)
     const [token, setToken] = useState('')
     const [remember, setRemember] = useState(state.config?.rememberToken !== false)
     const [showToken, setShowToken] = useState(false)
@@ -23,8 +23,20 @@ export function SettingsTab() {
     const [authError, setAuthError] = useState('')
 
     useEffect(() => {
-        if (state.config?.repo) setRepo(state.config.repo)
+        setRepo(state.config?.repo || SHARED_REPO)
     }, [state.config?.repo])
+
+    useEffect(() => {
+        if (!state.hasToken) {
+            setToken('')
+            setShowToken(false)
+            setDisconnect('')
+            setAuthMessage('')
+            setAuthError('')
+            setSuccess('')
+            setError('')
+        }
+    }, [state.hasToken, state.config?.repo])
 
     const submit = async () => {
         setError('')
@@ -33,7 +45,7 @@ export function SettingsTab() {
         try {
             const result = await saveSetup({ repo, token, rememberToken: remember })
             setToken('')
-            setSuccess(`Подключено: ${result.repo.fullName}. Workflow активен.`)
+            setSuccess(`Подключено: ${result.repo.fullName}. ${isRepositoryAdmin() ? 'Вход владельца выполнен.' : 'Заявки доступны через браузер GitHub без токена.'}`)
         } catch (submitError) {
             setError(submitError instanceof Error ? submitError.message : String(submitError))
         } finally {
@@ -68,8 +80,8 @@ export function SettingsTab() {
             const info = await refreshRepoAccess()
             setSuccess(
                 info?.viewer
-                    ? `Вход выполнен: ${info.viewer}. ${info.canAdmin ? 'Права владельца.' : info.canPush ? 'Права участника: добавления через заявку.' : 'Только чтение; для добавлений нужен токен.'}`
-                    : 'Доступ проверен: режим чтения.',
+                    ? `Аккаунт: ${info.viewer}. ${isRepositoryAdmin() ? 'Права владельца.' : 'Заявки без доступа к репозиторию.'}`
+                    : info ? 'Общая библиотека. Заявки без доступа к репозиторию.' : 'Не удалось проверить доступ. Попробуйте ещё раз.',
             )
         } catch (checkError) {
             setError(checkError instanceof Error ? checkError.message : String(checkError))
@@ -92,7 +104,7 @@ export function SettingsTab() {
         }
     }
 
-    const admin = state.repoInfo?.canAdmin === true
+    const admin = isRepositoryAdmin()
     const secretsUrl = state.config ? `https://github.com/${state.config.repo}/settings/secrets/actions` : ''
 
     const checkYoutube = async () => {
@@ -112,9 +124,7 @@ export function SettingsTab() {
         ? 'Не подключён'
         : admin
           ? 'Владелец'
-          : state.hasToken
-            ? 'Участник (заявки)'
-            : 'Чтение'
+           : 'Заявки без доступа к репозиторию'
 
     return (
         <div className="uc-stack">
@@ -127,9 +137,9 @@ export function SettingsTab() {
                     <span className="uc-status-pill uc-ok">Без токена</span>
                 </div>
                 <div className="uc-hint">
-                    Подключение к общему пулу замен. Для чтения друзьям не нужен GitHub-токен: они видят ваши замены
-                    и могут скрывать их только у себя. Владелец добавляет и удаляет напрямую. Добавления друзей
-                    попадают в GitHub Issues и публикуются только после метки владельца.
+                    Замены доступны без токена и доступа к репозиторию. Скрытие замен действует только у вас.
+                    Для заявки войдите в GitHub в браузере и отправьте открытый аддоном черновик через Submit new issue.
+                    Публикацию подтверждает владелец.
                 </div>
                 <div className="uc-kv">
                     <div><span>Репозиторий</span><strong>{SHARED_REPO}</strong></div>
@@ -147,25 +157,29 @@ export function SettingsTab() {
                     ) : null}
                 </div>
                 <div className="uc-muted uc-small uc-mt">
-                    Для добавления другу нужен личный fine-grained token: Actions — Read and write, Contents — Read,
-                    Metadata — Read. Не выдавайте друзьям Contents write: collaborator может обойти проверку через
-                    сайт GitHub, и аддон не сможет это предотвратить.
+                    Заявки без доступа к репозиторию. GitHub-токен и приглашение в collaborators не нужны.
                 </div>
             </section>
 
-            <section className="uc-card">
+            {error ? <div className="uc-inline-error">{error}</div> : null}
+            {success ? <div className="uc-check uc-ok-text">{success}</div> : null}
+
+            <details className="uc-card uc-details">
+                <summary>Вход владельца</summary>
+                <div className="uc-details-body">
                 <div className="uc-section-head">
                     <div>
                         <div className="uc-eyebrow">Подключение</div>
-                        <div className="uc-section-title">Ваш GitHub</div>
+                        <div className="uc-section-title">Вход по GitHub-токену</div>
                     </div>
                     <span className={`uc-status-pill ${state.config ? 'uc-ok' : ''}`}>
-                        {state.config ? (state.hasToken ? 'Подключён' : 'Только чтение') : 'Не подключён'}
+                        {admin ? `Владелец: ${state.repoInfo?.viewer}` : 'Только для владельца'}
                     </span>
                 </div>
                 <div className="uc-hint">
-                    Нужен публичный репозиторий: Яндекс Музыке требуются прямые ссылки без авторизации. Токен даёт
-                    доступ только к Actions и Contents выбранного репозитория.
+                    Войдите личным fine-grained token владельца публичного репозитория, не через OAuth.
+                    Contents и Actions: Read and write; Metadata: Read. Для принятия и отклонения заявок
+                    в аддоне дополнительно нужен Issues: Read and write. Без этого права проверяйте заявки на сайте GitHub.
                 </div>
                 <div className="uc-grid uc-grid-1">
                     <label className="uc-field">
@@ -204,16 +218,15 @@ export function SettingsTab() {
                 </div>
                 <div className="uc-row-actions uc-wrap">
                     <button type="button" className="uc-btn uc-btn-primary" disabled={saving || !repo.trim()} onClick={() => void submit()}>
-                        {saving ? 'Проверяем…' : state.config ? 'Сохранить' : 'Подключить'}
+                        {saving ? 'Проверяем…' : 'Войти по токену / сохранить'}
                     </button>
                     <a className="uc-link uc-small" href={TOKEN_URL} target="_blank" rel="noreferrer">
                         Создать токен
                     </a>
                 </div>
-                {error ? <div className="uc-inline-error">{error}</div> : null}
-                {success ? <div className="uc-check uc-ok-text">{success}</div> : null}
                 <div className="uc-muted uc-small uc-mt">Токен не попадает в репозиторий и не передаётся в workflow.</div>
-            </section>
+                </div>
+            </details>
 
             {admin && state.config ? (
                 <section className="uc-card">
@@ -302,12 +315,12 @@ export function SettingsTab() {
                         <div><span>Аккаунт</span><strong>{state.repoInfo?.viewer || (state.hasToken ? 'проверяем…' : 'гость')}</strong></div>
                         <div><span>Права</span><strong>{accessLabel}</strong></div>
                         <div><span>Видимость</span><strong>{state.repoInfo?.private ? 'приватный — не подходит' : 'публичный'}</strong></div>
-                        <div><span>Contents</span><strong>{state.repoInfo?.canPush === undefined ? 'не проверялась' : state.repoInfo.canPush ? 'запись' : 'только чтение'}</strong></div>
+                        {admin ? <div><span>Contents</span><strong>{state.repoInfo?.canPush ? 'запись' : 'только чтение'}</strong></div> : null}
                         <div>
                             <span>Добавление</span>
-                            <strong>{admin ? 'напрямую' : state.hasToken ? 'через заявку' : 'нужен токен'}</strong>
+                            <strong>{admin ? 'напрямую' : 'через браузер GitHub'}</strong>
                         </div>
-                        <div><span>Workflow</span><strong>{state.workflow ? state.workflow.state : 'проверен при подключении'}</strong></div>
+                        {admin ? <div><span>Workflow</span><strong>{state.workflow?.state || 'не проверен'}</strong></div> : null}
                     </div>
                     <div className="uc-row-actions uc-wrap">
                         {disconnect === 'repo' || disconnect === 'token' ? (
@@ -349,7 +362,7 @@ export function SettingsTab() {
                 </div>
             </section>
 
-            <details className="uc-card uc-details">
+            {admin ? <details className="uc-card uc-details">
                 <summary>Подготовка репозитория</summary>
                 <div className="uc-details-body">
                     <ol className="uc-steps">
@@ -359,9 +372,9 @@ export function SettingsTab() {
                         <li>Actions: <strong>Read and write permissions</strong>.</li>
                     </ol>
                     <div className="uc-hint">
-                        Владельцу: Contents — Read and write, Actions — Read and write, Metadata — Read.
-                        Друзьям достаточно Actions — Read and write, Contents — Read, Metadata — Read. Issues не нужен
-                        приложению: workflow использует собственный GITHUB_TOKEN.
+                        Владельцу: Contents и Actions: Read and write, Metadata: Read.
+                        Issues: Read and write нужен для решений по заявкам из аддона.
+                        Без него ставьте метки на сайте GitHub. Гостям токен не нужен.
                     </div>
                     <div className="uc-muted uc-small">
                         Добавления друзей сначала попадают в GitHub Issues. Владелец ставит метку
@@ -372,7 +385,7 @@ export function SettingsTab() {
                         Публикуйте только записи, на которые у вас есть права. Репозиторий и аудиофайлы видны всем.
                     </div>
                 </div>
-            </details>
+            </details> : null}
         </div>
     )
 }

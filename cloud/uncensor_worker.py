@@ -740,6 +740,9 @@ class JobStatus:
         self.eta_seconds = JOB_ETA_SECONDS.get(action, 30)
         self.started_at = ""
         self.run_url = self._run_url()
+        self.issue_number = 0
+        self.issue_url = ""
+        self.requested_by = ""
 
     def _run_url(self) -> str:
         server = env("GITHUB_SERVER_URL", "https://github.com").rstrip("/")
@@ -771,6 +774,10 @@ class JobStatus:
         if self.run_url:
             payload["runUrl"] = self.run_url
         payload.update(fields)
+        if self.issue_number:
+            payload.update(issueNumber=self.issue_number, issueUrl=self.issue_url, requestedBy=self.requested_by)
+            if "warnings" in payload:
+                payload["warnings"] = ["Some providers could not return metadata."] if fields.get("warnings") else []
         self.github.upsert_json(f"{JOBS_DIR}/{self.job_id}.json", payload, f"uncensor-cloud: job {self.job_id} {status}")
 
 
@@ -1217,7 +1224,8 @@ def handle_search(github: GitHubAPI, job: JobStatus) -> None:
             " ".join(provider_errors)[:3000] or "Поиск не вернул результатов.",
         )
 
-    job.write("ready", candidates=candidates[:12], warnings=provider_errors[:8])
+    job.write("ready", candidates=candidates[:12], warnings=provider_errors[:8],
+              note="Поиск завершён. Выберите запись в аддоне и отправьте на проверку." if job.issue_number else "")
 
 
 def split_artists(value: str) -> list[str]:
@@ -1823,9 +1831,183 @@ def report_approval_failure(github: GitHubAPI, error: WorkerError) -> None:  # p
         LOG.warning("Could not report approval failure: %s", comment_error)
 
 
+REQUEST_PREFIX = "stupidcensor-request-v1\n```json\n"
+REQUEST_BODY_LIMIT = 16384
+
+
+def handle_issue_request(github: GitHubAPI, repo: str, branch: str) -> int:
+    job: JobStatus | None = None
+    number = 0
+    previous_env = os.environ.copy()
+    try:
+        # Read event data, never execute or interpolate issue content in a shell.
+        with Path(env("GITHUB_EVENT_PATH", required=True)).open(encoding="utf-8") as handle:
+            event_text = handle.read(1024 * 1024 + 1)
+        if len(event_text) > 1024 * 1024:
+            raise ValueError("Event too large")
+        event = json.loads(event_text)
+        issue = event["issue"]
+        if event.get("action") != "opened" or "pull_request" in issue:
+            raise ValueError("Not an opened issue")
+        number = issue["number"]
+        if type(number) is not int or number <= 0:
+            number = 0
+            raise ValueError("Invalid issue number")
+        actor = issue["user"]["login"]
+        if not isinstance(actor, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}", actor):
+            raise ValueError("Invalid requester")
+        body = issue["body"]
+        if isinstance(body, str):
+            body = body.replace("\r\n", "\n").strip("\n")
+        if not isinstance(body, str) or len(body) > REQUEST_BODY_LIMIT or not body.startswith(REQUEST_PREFIX) or not body.endswith("\n```"):
+            raise ValueError("Invalid request envelope")
+        payload = json.loads(body[len(REQUEST_PREFIX):-4])
+        if not isinstance(payload, dict):
+            raise ValueError("Request must be an object")
+        action = payload.get("action")
+        if action not in ("search", "confirm", "manual"):
+            raise ValueError("Invalid request action")
+        job_id = payload.get("id")
+        track_id = payload.get("trackId")
+        if not isinstance(job_id, str) or not isinstance(track_id, str):
+            raise ValueError("Invalid identifiers")
+        validate_inputs(action, job_id, track_id)
+        existing = github.get_json(f"{JOBS_DIR}/{job_id}.json")
+        if existing is not None:
+            if existing.get("issueNumber") == number and existing.get("requestedBy") == actor:
+                return 0  # Redelivery must not overwrite or repeat an accepted request.
+            raise ValueError("Job ID already used")
+        if github.get_json(submission_path(job_id)) is not None:
+            raise ValueError("Submission ID already used")
+        for key in ("title", "artist"):
+            value = payload.get(key)
+            if not isinstance(value, str) or len(value) > 300 or (key == "title" and not value.strip()):
+                raise ValueError("Invalid track metadata")
+            if any(ord(char) < 32 for char in value):
+                raise ValueError("Control characters in metadata")
+        duration = payload.get("duration")
+        if type(duration) not in (int, float) or not (duration == 0 or 20 <= duration <= 3600):
+            raise ValueError("Invalid duration")
+        source_url = payload.get("sourceUrl", "")
+        if not isinstance(source_url, str) or len(source_url) > 1000:
+            raise ValueError("Invalid source URL")
+        if source_url:
+            validate_public_https(source_url)
+        os.environ.update({
+            "TRACK_ID": track_id, "TITLE": payload["title"], "ARTIST": payload["artist"],
+            "DURATION": str(duration), "SOURCE_URL": source_url, "GITHUB_ACTOR": actor,
+        })
+        if action != "search":
+            require_existing_replacement_permission(github, track_id)
+        details: dict[str, Any] = {}
+        if action == "confirm":
+            source_id = payload.get("sourceJobId")
+            selected_id = payload.get("candidateId")
+            if not isinstance(source_id, str) or not JOB_ID_RE.fullmatch(source_id):
+                raise ValueError("Invalid source job")
+            if not isinstance(selected_id, str) or not CANDIDATE_ID_RE.fullmatch(selected_id):
+                raise ValueError("Invalid candidate ID")
+            source = github.get_json(f"{JOBS_DIR}/{source_id}.json")
+            if not source or source.get("status") != "ready" or source.get("trackId") != track_id:
+                raise ValueError("Source job mismatch")
+            candidates = source.get("candidates")
+            if not isinstance(candidates, list):
+                raise ValueError("Missing candidates")
+            candidate = next((item for item in candidates if isinstance(item, dict) and item.get("id") == selected_id), None)
+            if not candidate or candidate.get("unavailable"):
+                raise ValueError("Candidate unavailable")
+            source_url = candidate.get("pageUrl")
+            if not isinstance(source_url, str) or len(source_url) > 1000:
+                raise ValueError("Invalid candidate URL")
+            validate_public_https(source_url)
+            details = {
+                "sourceJobId": source_id, "candidateId": selected_id, "sourceUrl": source_url,
+                "candidateTitle": clean_text(candidate.get("title"), 300),
+                "candidateProvider": clean_text(candidate.get("provider"), 40),
+            }
+        elif action == "manual":
+            validate_public_https(source_url)
+            details = {"sourceUrl": source_url, "candidateTitle": clean_text(payload["title"], 300),
+                       "candidateProvider": provider_for_url(source_url) or "manual"}
+        # Omitting SHA makes this create-only: a concurrent issue cannot claim the same ID.
+        reservation = {
+            "schema": 1, "id": job_id, "action": action, "trackId": track_id,
+            "issueNumber": number, "requestedBy": actor, "status": "reserved",
+        }
+        github.put_file(
+            f"{JOBS_DIR}/{job_id}.json", json.dumps(reservation) + "\n",
+            f"uncensor-cloud: reserve job {job_id}", sha=None,
+        )
+        # Do not assign job before reservation succeeds: failure must not overwrite the winner.
+        job = JobStatus(github, action, job_id, repo, branch)
+        job.issue_number = number
+        job.issue_url = f"https://github.com/{repo}/issues/{number}"
+        job.requested_by = actor
+        job.write("running", note="Заявка получена. Идёт поиск источников." if action == "search" else "Заявка получена. Проверяем выбранный источник.")
+        if action == "search":
+            handle_search(github, job)
+            result = github.get_json(f"{JOBS_DIR}/{job_id}.json") or {}
+            lines = ["Поиск завершён. Найдены ссылки на кандидатов; аудио не скачивалось:"]
+            for candidate in result.get("candidates", []):
+                # Encode links and omit provider titles to avoid Markdown/mention injection.
+                link = quote(candidate["pageUrl"], safe=":/?=&%+#")
+                lines.append(f"- `{candidate['id']}`: <{link}>")
+            lines.append("\nВыберите подходящий вариант в дополнении и отправьте его на проверку владельцу. "
+                         "Эта поисковая заявка закрыта; подтверждать её меткой не нужно.")
+            github.comment_issue(number, "\n".join(lines))
+            github.close_issue(number)
+            return 0
+        submission = {
+            "schema": 1, "action": action, "jobId": job_id, "trackId": track_id,
+            "trackTitle": job.track_title, "trackArtist": job.track_artist,
+            "trackDurationMs": job.track_duration_ms, "requestedBy": actor, "requestedAt": iso_now(),
+            "issueNumber": number, "issueUrl": job.issue_url, **details,
+        }
+        github.upsert_json(submission_path(job_id), submission, f"uncensor-cloud: request {job_id}")
+        ensure_approval_labels(github)
+        github.add_labels(number, [APPROVAL_LABELS["request"][0]])
+        job.write("awaiting_approval", note="Выбранная запись ждёт решения владельца. Только после принятия начнётся публикация.")
+        # Keep user metadata inside code spans, without backticks or mention syntax.
+        title = job.track_title.replace("`", "'").replace("@", "(at)")
+        artist = job.track_artist.replace("`", "'").replace("@", "(at)") or "не указан"
+        source_link = quote(details["sourceUrl"], safe=":/?=&%+#")
+        github.comment_issue(number, "\n".join([
+            "Заявка сохранена и ожидает проверки владельцем. Аудио не скачивалось и не публиковалось.",
+            "", f"**Трек:** `{title}`", f"**Исполнитель:** `{artist}`",
+            f"[Трек в Яндекс Музыке](https://music.yandex.ru/track/{track_id})",
+            f"[Открыть источник для прослушивания](<{source_link}>)", "",
+            f"Владелец: добавьте метку `{APPROVAL_LABELS['approved'][0]}`, чтобы разрешить публикацию, "
+            f"или `{APPROVAL_LABELS['rejected'][0]}`, чтобы отклонить заявку.",
+        ]))
+        return 0
+    except Exception:
+        # Extractor and validation exceptions may contain user input or credentials.
+        failure = {"code": "request_failed", "message": "Не удалось обработать заявку. Проверьте поля и ссылки или отправьте новую заявку из дополнения."}
+        if job is not None:
+            try:
+                job.write("failed", error=failure)
+            except Exception:
+                pass
+        if number:
+            try:
+                github.comment_issue(number, failure["message"])
+            except Exception:
+                pass
+        LOG.error("Issue request processing failed")
+        return 1
+    finally:
+        os.environ.clear()
+        os.environ.update(previous_env)
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     action = env("ACTION", required=True).strip()
+    if action == "request":
+        repo = env("GITHUB_REPOSITORY", required=True).strip()
+        branch = env("GITHUB_REF_NAME", required=True).strip()
+        github = GitHubAPI(env("GITHUB_TOKEN", required=True).strip(), repo, branch)
+        return handle_issue_request(github, repo, branch)
     job_id = env("JOB_ID", required=True).strip()
     track_id = env("TRACK_ID", required=True).strip()
     repo = env("GITHUB_REPOSITORY", required=True).strip()

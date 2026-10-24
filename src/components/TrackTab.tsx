@@ -39,6 +39,7 @@ function durationDelta(targetMs: number, candidateMs: number): string {
 }
 
 function pendingLabel(job: JobRecord, admin: boolean): string {
+    if (job.externalRequest && job.status === 'queued') return 'Отправьте подготовленную заявку в GitHub'
     if (job.status === 'queued') return 'В очереди GitHub Actions'
     if (job.action === 'search') return 'Ищем подходящие записи'
     return admin ? 'Публикуем выбранную запись' : 'Отправляем заявку владельцу'
@@ -121,7 +122,7 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
             state.jobs.find(
                 job =>
                     job.trackId === track.id &&
-                    job.action === 'confirm' &&
+                    (job.action === 'confirm' || job.action === 'manual') &&
                     (job.status === 'queued' || job.status === 'running'),
             ) ?? null
         )
@@ -375,16 +376,23 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                         <span style={{ width: `${Math.max(4, Math.round(timing.progress * 100))}%` }} />
                     </div>
                     <div className="uc-muted uc-small uc-mt">
-                        Можно закрыть панель: задание продолжится, статус сохранится.
+                        {activeJob.externalRequest
+                            ? 'В открывшейся странице GitHub нажмите Submit new issue. После отправки статус появится здесь автоматически. Доступ к репозиторию не нужен.'
+                            : 'Можно закрыть панель: задание продолжится, статус сохранится.'}
                     </div>
                     <div className="uc-row-actions uc-wrap">
+                        {activeJob.requestUrl && !activeJob.issueUrl ? (
+                            <a className="uc-btn uc-btn-primary uc-btn-small" href={activeJob.requestUrl} target="_blank" rel="noreferrer">
+                                Открыть черновик GitHub
+                            </a>
+                        ) : null}
                         <button
                             type="button"
                             className="uc-btn uc-btn-small"
                             disabled={busy === `cancel:${activeJob.id}`}
                             onClick={() => void cancelActive()}
                         >
-                            {busy === `cancel:${activeJob.id}` ? 'Отменяем…' : 'Отменить'}
+                            {busy === `cancel:${activeJob.id}` ? 'Отменяем…' : activeJob.externalRequest ? 'Скрыть отслеживание' : 'Отменить'}
                         </button>
                         {admin && activeJob.runUrl ? (
                             <a className="uc-link uc-small" href={activeJob.runUrl} target="_blank" rel="noreferrer">
@@ -480,7 +488,7 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                                         onSource={setSourceUrl}
                                     />
                                     <div className="uc-row-actions">
-                                        <button type="button" className="uc-btn" disabled={busy === 'search' || !state.hasToken} onClick={() => void runSearch()}>
+                                        <button type="button" className="uc-btn" disabled={busy === 'search' || !state.config} onClick={() => void runSearch()}>
                                             {busy === 'search' ? 'Отправляем…' : 'Искать заново'}
                                         </button>
                                     </div>
@@ -490,19 +498,21 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                     ) : (
                         <>
                             <div className="uc-hint">
-                                Поиск читает только названия, авторов и длительность. Аудио скачивается после выбора.
+                                {admin
+                                    ? 'Поиск читает только названия, авторов и длительность. Аудио скачивается после выбора.'
+                                    : 'Поиск запускается через подготовленную заявку GitHub. Выберите найденную запись и отправьте её владельцу на проверку. Только владелец может опубликовать аудио.'}
                             </div>
                             <div className="uc-search-primary">
                                 <button
                                     type="button"
                                     className="uc-btn uc-btn-primary"
-                                    disabled={busy === 'search' || !state.hasToken}
+                                    disabled={busy === 'search' || !state.config}
                                     onClick={() => void runSearch()}
                                 >
                                     {busy === 'search' ? 'Отправляем…' : 'Найти замену'}
                                 </button>
                                 <span className="uc-muted uc-small">
-                                    {state.hasToken ? 'Обычно 30–60 секунд.' : 'Нужен токен в разделе «GitHub».'}
+                                    {admin ? 'Обычно 30–60 секунд.' : 'GitHub откроется в браузере. Токен и права на репозиторий не нужны.'}
                                 </span>
                             </div>
                             <details className="uc-more uc-more-after">
@@ -519,7 +529,7 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                                         onSource={setSourceUrl}
                                     />
                                     <div className="uc-row-actions">
-                                        <button type="button" className="uc-btn" disabled={busy === 'search' || !state.hasToken} onClick={() => void runSearch()}>
+                                        <button type="button" className="uc-btn" disabled={busy === 'search' || !state.config} onClick={() => void runSearch()}>
                                             Искать с этими данными
                                         </button>
                                     </div>
@@ -557,7 +567,7 @@ export function TrackTab({ initialTrack, currentTrack, initialAction, onOpenJobs
                         <button
                             type="button"
                             className="uc-btn uc-btn-primary"
-                            disabled={busy === 'manual' || !manualUrl.trim() || !state.hasToken || replaceBlocked}
+                            disabled={busy === 'manual' || !manualUrl.trim() || !state.config || replaceBlocked}
                             onClick={() => void runManual()}
                         >
                             {busy === 'manual' ? 'Отправляем…' : replaceBlocked ? 'Только владелец' : admin ? 'Сохранить' : 'На проверку'}

@@ -1,5 +1,6 @@
 import base64
 import http.cookiejar
+import json
 import os
 import sys
 import tempfile
@@ -970,6 +971,228 @@ class ApprovalTests(unittest.TestCase):
 
         self.assertEqual(github.labels, [(42, ["uncensor-published"])])
         self.assertEqual(github.closed, [42])
+
+
+class FakeRequestGitHub:
+    def __init__(self):
+        self.files = {}
+        self.writes = []
+        self.comments = []
+        self.closed = []
+        self.labels = []
+        self.reservations = []
+
+    def get_json(self, path):
+        return self.files.get(path)
+
+    def put_file(self, path, text, message, sha=None):
+        if sha is not None or path in self.files:
+            raise worker.WorkerError("github_http", "Create-only conflict", status=422)
+        if not path.startswith("jobs/"):
+            raise AssertionError("Only jobs may be reserved")
+        payload = json.loads(text)
+        self.files[path] = payload
+        self.reservations.append((path, payload))
+
+    def upsert_json(self, path, payload, message):
+        if not path.startswith(("jobs/", "submissions/")):
+            raise AssertionError("Intake must not mutate the library")
+        self.files[path] = payload
+        self.writes.append((path, payload))
+
+    def comment_issue(self, number, body):
+        self.comments.append((number, body))
+
+    def close_issue(self, number):
+        self.closed.append(number)
+
+    def ensure_label(self, *args):
+        pass
+
+    def add_labels(self, number, labels):
+        self.labels.append((number, labels))
+
+
+class IssueRequestTests(unittest.TestCase):
+    def setUp(self):
+        self.github = FakeRequestGitHub()
+        self.payload = {"id": "12345678-abcd", "action": "search", "trackId": "123456",
+                        "title": "Track", "artist": "Artist", "duration": 245}
+        self.candidate = {"id": "candidate-one", "provider": "youtube",
+                          "pageUrl": "https://8.8.8.8/watch?v=one", "title": "Trusted title"}
+        self.github.files["jobs/source-12345678.json"] = {
+            "status": "ready", "trackId": "123456", "candidates": [self.candidate]}
+
+    def run_request(self, body=None, actor="ordinary-user", use_main=False):
+        event = {"action": "opened", "issue": {"number": 42, "user": {"login": actor},
+                 "body": body if body is not None else worker.REQUEST_PREFIX + json.dumps(self.payload) + "\n```"}}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "event.json"
+            path.write_text(json.dumps(event), encoding="utf-8")
+            with patch.dict(os.environ, {"ACTION": "request", "GITHUB_EVENT_PATH": str(path),
+                            "GITHUB_REPOSITORY": "owner/repo", "GITHUB_REF_NAME": "main",
+                            "GITHUB_TOKEN": "synthetic", "GITHUB_ACTOR": "owner"}, clear=True), \
+                    patch("uncensor_worker.download_and_transcode") as download, \
+                    patch("uncensor_worker.download_public_file") as direct_download, \
+                    patch.object(worker.GitHubAPI, "cleanup_legacy_previews") as cleanup, \
+                    patch.object(worker.GitHubAPI, "update_index") as publish, \
+                    patch.object(worker.GitHubAPI, "ensure_release") as release, \
+                    patch.object(worker.GitHubAPI, "upload_asset") as upload, \
+                    patch("uncensor_worker.handle_confirm") as confirm, \
+                    patch("uncensor_worker.handle_manual") as manual:
+                if use_main:
+                    with patch("uncensor_worker.GitHubAPI", return_value=self.github):
+                        result = worker.main()
+                else:
+                    result = worker.handle_issue_request(self.github, "owner/repo", "main")
+                for forbidden in (download, direct_download, cleanup, publish, release, upload, confirm, manual):
+                    forbidden.assert_not_called()
+                return result
+
+    def test_ordinary_user_search_via_main_without_job_env(self):
+        entry = {"provider": "youtube", "pageUrl": self.candidate["pageUrl"],
+                 "title": "Artist Track", "uploader": "Artist", "duration": 245}
+        with patch("uncensor_worker.search_entries", side_effect=[[entry], [], [], []]):
+            self.assertEqual(self.run_request(use_main=True), 0)
+        self.assertEqual([data["status"] for _, data in self.github.writes], ["running", "ready"])
+        self.assertEqual(self.github.reservations, [("jobs/12345678-abcd.json", {
+            "schema": 1, "id": "12345678-abcd", "action": "search", "trackId": "123456",
+            "issueNumber": 42, "requestedBy": "ordinary-user", "status": "reserved",
+        })])
+        for _, status in self.github.writes:
+            self.assertEqual(status["issueNumber"], 42)
+            self.assertEqual(status["requestedBy"], "ordinary-user")
+            self.assertEqual(status["issueUrl"], "https://github.com/owner/repo/issues/42")
+        self.assertEqual(self.github.closed, [42])
+        self.assertIn(self.candidate["pageUrl"], self.github.comments[0][1])
+        self.assertIn("Выберите подходящий вариант в дополнении", self.github.comments[0][1])
+        self.assertIn("подтверждать её меткой не нужно", self.github.comments[0][1])
+        self.assertFalse(any(path.startswith("submissions/") for path, _ in self.github.writes))
+
+    def test_confirm_uses_current_issue_and_trusted_candidate(self):
+        self.payload.update(action="confirm", sourceJobId="source-12345678", candidateId="candidate-one",
+                            sourceUrl="https://8.8.8.8/forged", requestedBy="owner", issueNumber=99,
+                            candidateTitle="Forged", candidateProvider="Forged")
+        self.assertEqual(self.run_request(), 0)
+        submission = self.github.files["submissions/12345678-abcd.json"]
+        self.assertEqual(submission["action"], "confirm")
+        self.assertEqual(submission["issueNumber"], 42)
+        self.assertEqual(submission["requestedBy"], "ordinary-user")
+        self.assertEqual(submission["sourceUrl"], self.candidate["pageUrl"])
+        self.assertEqual(submission["candidateTitle"], "Trusted title")
+        self.assertEqual(submission["candidateProvider"], "youtube")
+        self.assertEqual(self.github.writes[-1][1]["status"], "awaiting_approval")
+        self.assertEqual(self.github.labels, [(42, [worker.APPROVAL_LABELS["request"][0]])])
+        self.assertEqual(self.github.closed, [])
+        comment = self.github.comments[-1][1]
+        self.assertIn("`Track`", comment)
+        self.assertIn("`Artist`", comment)
+        self.assertIn("https://music.yandex.ru/track/123456", comment)
+        self.assertIn("[Открыть источник для прослушивания](<" + self.candidate["pageUrl"] + ">)", comment)
+        self.assertIn("`uncensor-approved`", comment)
+        self.assertIn("`uncensor-rejected`", comment)
+
+    def test_owner_manual_also_requires_review(self):
+        self.payload.update(action="manual", sourceUrl="https://8.8.8.8/audio.m4a")
+        self.assertEqual(self.run_request(actor="owner"), 0)
+        self.assertEqual(self.github.files["submissions/12345678-abcd.json"]["action"], "manual")
+        self.assertEqual(self.github.writes[-1][1]["status"], "awaiting_approval")
+
+    def test_review_comment_escapes_metadata_and_source_link(self):
+        self.payload.update(action="manual", title="@owner ` [click](evil)", artist="@everyone `Artist`",
+                            sourceUrl="https://8.8.8.8/audio?q=)[x](<bad>)&user=@owner")
+        self.assertEqual(self.run_request(), 0)
+        comment = self.github.comments[-1][1]
+        self.assertNotIn("@owner", comment)
+        self.assertNotIn("@everyone", comment)
+        self.assertIn("`(at)owner ' [click](evil)`", comment)
+        self.assertIn("`(at)everyone 'Artist'`", comment)
+        self.assertIn("%29%5Bx%5D%28%3Cbad%3E%29", comment)
+        self.assertIn("%40owner", comment)
+
+    def test_malformed_envelope_and_json(self):
+        for body in ("not a request", worker.REQUEST_PREFIX + "{}", worker.REQUEST_PREFIX + "[]\n```",
+                     worker.REQUEST_PREFIX + "{bad}\n```", worker.REQUEST_PREFIX + "x" * 17000 + "\n```"):
+            with self.subTest(body=body[:50]):
+                self.assertEqual(self.run_request(body=body), 1)
+        self.assertEqual(self.github.writes, [])
+
+    def test_invalid_payload_fields(self):
+        for field, value in (("action", "remove"), ("action", []), ("id", "../escape"),
+                             ("trackId", "abc"), ("trackId", 123), ("title", "x" * 301),
+                             ("title", ""), ("artist", "bad\nmetadata"), ("duration", True),
+                             ("duration", float("nan")), ("duration", 3601), ("duration", -1),
+                             ("sourceUrl", "https://127.0.0.1/private")):
+            with self.subTest(field=field, value=value), patch.dict(self.payload, {field: value}):
+                self.assertEqual(self.run_request(), 1)
+        self.assertEqual(self.github.writes, [])
+
+    def test_collisions_never_overwrite_and_redelivery_is_noop(self):
+        path = "jobs/12345678-abcd.json"
+        self.github.files[path] = {"issueNumber": 99, "requestedBy": "ordinary-user"}
+        self.assertEqual(self.run_request(), 1)
+        self.assertEqual(self.github.writes, [])
+        self.github.files[path]["issueNumber"] = 42
+        self.assertEqual(self.run_request(), 0)
+        self.assertEqual(self.github.writes, [])
+        del self.github.files[path]
+        self.github.files["submissions/12345678-abcd.json"] = {"issueNumber": 99}
+        self.assertEqual(self.run_request(), 1)
+        self.assertEqual(self.github.writes, [])
+
+    def test_racing_issue_reservation_conflict_never_overwrites_winner(self):
+        path = "jobs/12345678-abcd.json"
+        winner = {"schema": 1, "id": self.payload["id"], "action": "manual", "trackId": "999",
+                  "issueNumber": 99, "requestedBy": "other-user", "status": "reserved"}
+        create_only = self.github.put_file
+
+        def race(reserved_path, text, message, sha=None):
+            self.assertNotIn(path, self.github.files)
+            self.assertEqual(reserved_path, path)
+            self.assertIsNone(sha)
+            self.github.files[path] = winner.copy()
+            return create_only(reserved_path, text, message, sha)
+
+        with patch.object(self.github, "put_file", side_effect=race) as reserve, \
+                patch("uncensor_worker.handle_search") as search:
+            self.assertEqual(self.run_request(), 1)
+        reserve.assert_called_once()
+        search.assert_not_called()
+        self.assertEqual(self.github.files[path], winner)
+        self.assertEqual(self.github.writes, [])
+        self.assertEqual(self.github.reservations, [])
+        self.assertEqual(self.github.labels, [])
+        self.assertEqual(self.github.comments[0][0], 42)
+        self.assertFalse(any(path.startswith("submissions/") for path in self.github.files))
+
+    def test_confirm_rejects_mismatched_missing_or_unavailable_candidate(self):
+        self.payload.update(action="confirm", sourceJobId="source-12345678", candidateId="candidate-one")
+        source = self.github.files["jobs/source-12345678.json"]
+        for changes in ({"trackId": "999"}, {"status": "running"}, {"candidates": []},
+                        {"candidates": [{**self.candidate, "unavailable": True}]}):
+            with self.subTest(changes=changes), patch.dict(source, changes):
+                self.github.files.pop("jobs/12345678-abcd.json", None)
+                self.assertEqual(self.run_request(), 1)
+                self.assertEqual(self.github.writes, [])
+                self.assertEqual(self.github.reservations, [])
+                self.assertNotIn("submissions/12345678-abcd.json", self.github.files)
+
+    def test_nonowner_cannot_replace_existing_mapping(self):
+        self.github.files["list.json"] = {"tracks": {"123456": {"audioUrl": "existing"}}}
+        self.payload.update(action="manual", sourceUrl="https://8.8.8.8/audio.m4a")
+        self.assertEqual(self.run_request(), 1)
+        self.assertNotIn("submissions/12345678-abcd.json", self.github.files)
+        self.assertEqual(self.github.reservations, [])
+        self.assertEqual(self.github.files["list.json"]["tracks"]["123456"]["audioUrl"], "existing")
+
+    def test_search_failure_is_sanitized(self):
+        with patch("uncensor_worker.handle_search", side_effect=worker.WorkerError("bad", "secret-payload", "secret-token")):
+            self.assertEqual(self.run_request(), 1)
+        status = self.github.writes[-1][1]
+        self.assertEqual(status["status"], "failed")
+        self.assertEqual(status["requestedBy"], "ordinary-user")
+        self.assertNotIn("secret", json.dumps(status) + json.dumps(self.github.comments))
+        self.assertIn("Не удалось обработать заявку", self.github.comments[-1][1])
 
 
 class ValidationTests(unittest.TestCase):
