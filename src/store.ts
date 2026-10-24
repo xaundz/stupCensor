@@ -36,6 +36,7 @@ import { resolveTrack } from './lib/tracks.ts'
 import { settings } from './legacy/settings.ts'
 import { SHARED_REPO } from './legacy/constants.ts'
 import { buildRequestUrl } from './lib/requests.ts'
+import { COOKIE_FILE_LIMIT, CookieFileError, encryptCookies, normalizeYoutubeCookies } from './lib/cookies.ts'
 
 const CONFIG_KEY = 'stupidcensor.config.v1'
 const TOKEN_KEY = 'stupidcensor.token.v1'
@@ -766,6 +767,48 @@ export async function startAuthCheck(): Promise<JobRecord> {
         duration: '0',
     })
     return job
+}
+
+export async function saveYoutubeCookies(file: File): Promise<void> {
+    if (!isRepositoryAdmin()) throw new Error('Загрузка cookies доступна только подтверждённому владельцу.')
+    const api = requireApi()
+    const config = state.config
+    const currentToken = token
+    const revision = accessRevision
+    const isCurrent = () => active && apiRef === api && state.config === config && token === currentToken &&
+        revision === accessRevision && isRepositoryAdmin()
+    const checkAccess = () => {
+        if (!isCurrent()) throw new CookieFileError('Аккаунт или режим изменился. Загрузка отменена, выберите файл заново.')
+    }
+    try {
+        if (!file.size) throw new CookieFileError('Выбран пустой файл. Экспортируйте cookies для youtube.com.')
+        if (file.size > COOKIE_FILE_LIMIT) throw new CookieFileError('Файл больше 48 КБ. Экспортируйте cookies только для youtube.com.')
+        const client = apiFor(api)
+        const access = await client.getAccessInfo()
+        checkAccess()
+        if (!access.canAdmin) throw new CookieFileError('GitHub не подтвердил аккаунт владельца.')
+        const contents = normalizeYoutubeCookies(await file.text())
+        checkAccess()
+        const response = await client.request(`/repos/${client.repo}/actions/secrets/public-key`)
+        const key = await response.json() as { key?: unknown; key_id?: unknown }
+        checkAccess()
+        if (typeof key.key !== 'string' || typeof key.key_id !== 'string' || !key.key_id || key.key_id.length > 200) {
+            throw new CookieFileError('GitHub не вернул ключ шифрования. Попробуйте загрузить файл ещё раз.')
+        }
+        const encrypted = await encryptCookies(contents, key.key)
+        checkAccess()
+        await client.request(`/repos/${client.repo}/actions/secrets/YTDLP_COOKIES`, {
+            method: 'PUT', body: { encrypted_value: encrypted, key_id: key.key_id },
+        })
+        checkAccess()
+    } catch (error) {
+        if (error instanceof CookieFileError) throw error
+        if (error instanceof GitHubError && (error.status === 403 || error.status === 404)) {
+            throw new Error('Нет доступа к секретам GitHub. Добавьте токену владельца Secrets: Read and write для этого репозитория или используйте ручное добавление на сайте GitHub.')
+        }
+        if (error instanceof GitHubError && error.status === 401) throw new Error('GitHub отклонил токен владельца. Войдите заново.')
+        throw new Error('Не удалось загрузить cookies в GitHub. Проверьте соединение и повторите попытку. Содержимое файла не сохранено в аддоне.')
+    }
 }
 
 export async function startManualAdd(track: TrackRef, meta: TrackSearchMeta, directUrl: string): Promise<JobRecord> {

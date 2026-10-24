@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react'
 
 import { SHARED_REPO } from '../legacy/constants.ts'
 import { settings } from '../legacy/settings.ts'
-import { disconnectGitHub, isRepositoryAdmin, isRepositoryOwner, refreshRepoAccess, saveSetup, setTestAsUser, startAuthCheck } from '../store.ts'
+import { disconnectGitHub, isRepositoryAdmin, isRepositoryOwner, refreshRepoAccess, saveSetup, setTestAsUser } from '../store.ts'
 import { useStore } from './useStore.ts'
+import { YoutubeCookies } from './YoutubeCookies.tsx'
 
 const TOKEN_URL = 'https://github.com/settings/personal-access-tokens/new'
 
@@ -18,9 +19,6 @@ export function SettingsTab() {
     const [error, setError] = useState('')
     const [success, setSuccess] = useState('')
     const [disconnect, setDisconnect] = useState<'token' | 'repo' | ''>('')
-    const [authBusy, setAuthBusy] = useState(false)
-    const [authMessage, setAuthMessage] = useState('')
-    const [authError, setAuthError] = useState('')
 
     useEffect(() => {
         setRepo(state.config?.repo || SHARED_REPO)
@@ -31,8 +29,6 @@ export function SettingsTab() {
             setToken('')
             setShowToken(false)
             setDisconnect('')
-            setAuthMessage('')
-            setAuthError('')
             setSuccess('')
             setError('')
         }
@@ -105,21 +101,6 @@ export function SettingsTab() {
     }
 
     const admin = isRepositoryAdmin()
-    const secretsUrl = state.config ? `https://github.com/${state.config.repo}/settings/secrets/actions` : ''
-
-    const checkYoutube = async () => {
-        setAuthBusy(true)
-        setAuthMessage('')
-        setAuthError('')
-        try {
-            await startAuthCheck()
-            setAuthMessage('Проверка запущена. Результат появится в «Заданиях».')
-        } catch (checkError) {
-            setAuthError(checkError instanceof Error ? checkError.message : String(checkError))
-        } finally {
-            setAuthBusy(false)
-        }
-    }
     const accessLabel = !state.config
         ? 'Не подключён'
         : admin
@@ -244,57 +225,7 @@ export function SettingsTab() {
             </details>
 
             {admin && state.config ? (
-                <section className="uc-card">
-                    <div className="uc-section-head">
-                        <div>
-                            <div className="uc-eyebrow">Источники</div>
-                            <div className="uc-section-title">YouTube cookies</div>
-                        </div>
-                        <span className="uc-status-pill">YTDLP_COOKIES</span>
-                    </div>
-                    <div className="uc-hint">
-                        С IP GitHub Actions YouTube часто требует вход. Добавьте cookies в секрет репозитория —
-                        аддон и workflow inputs их не видят. Cookies дают доступ к аккаунту Google: используйте
-                        отдельный аккаунт и не коммитьте файл.
-                    </div>
-                    <ol className="uc-steps">
-                        <li>
-                            Войдите в YouTube и экспортируйте cookies для <code>youtube.com</code> в формате Netscape
-                            (например, расширением «Get cookies.txt LOCALLY»).
-                        </li>
-                        <li>
-                            Откройте <a className="uc-link" href={secretsUrl} target="_blank" rel="noreferrer">секреты Actions</a>,
-                            создайте <code>YTDLP_COOKIES</code> и вставьте содержимое файла.
-                        </li>
-                        <li>
-                            Если GitHub не принимает многострочное значение, выполните на macOS
-                            <code>(printf 'base64:'; base64 -i cookies.txt) | pbcopy</code> и вставьте результат.
-                        </li>
-                        <li>
-                            При необходимости добавьте <code>YTDLP_PROXY</code> (HTTP/SOCKS5) — это помогает, когда
-                            блокировка по IP, а не по аккаунту.
-                        </li>
-                    </ol>
-                    <div className="uc-row-actions uc-wrap">
-                        <a className="uc-btn uc-btn-small" href={`${secretsUrl}/new`} target="_blank" rel="noreferrer">
-                            Добавить YTDLP_COOKIES
-                        </a>
-                        <button
-                            type="button"
-                            className="uc-btn uc-btn-primary uc-btn-small"
-                            disabled={authBusy || !state.hasToken}
-                            onClick={() => void checkYoutube()}
-                        >
-                            {authBusy ? 'Запускаем…' : 'Проверить YouTube'}
-                        </button>
-                    </div>
-                    {authMessage ? <div className="uc-check uc-ok-text">{authMessage}</div> : null}
-                    {authError ? <div className="uc-inline-error">{authError}</div> : null}
-                    <div className="uc-muted uc-small uc-mt">
-                        Проверка запускает короткое чтение тестового видео без скачивания. Если cookies не подошли,
-                        задание покажет ошибку <code>youtube_auth</code>.
-                    </div>
-                </section>
+                <YoutubeCookies key={`${state.config.repo}:${state.config.branch}:${state.repoInfo?.viewer}`} />
             ) : null}
 
             {state.config ? (
