@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Enable Yarn
+        run: |
+          corepack enable
+          yarn --version
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Verify version matches tag
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          test "$GITHUB_REF_NAME" = "v$VERSION" || {
+            echo "Tag $GITHUB_REF_NAME does not match package version $VERSION"
+            exit 1
+          }
+
+      - name: Test
+        run: |
+          npm run typecheck
+          npm run test:worker
+          npm run test:frontend -- --run
+
+      - name: Build addon and helper
+        run: |
+          npm run build:legacy
+          npm run build:helper
+          VERSION="$(node -p "require('./package.json').version")"
+          cp dist/stupid-censor.pext "dist/stupidCensor-${VERSION}.pext"
+          (cd repository-template && zip -qr "../dist/stupidcensor-repository-${VERSION}.zip" .)
+          git archive --format=zip --prefix="stupidCensor-${VERSION}/" \
+            -o "dist/stupidCensor-${VERSION}-source.zip" HEAD
+          (cd dist && sha256sum \
+            "stupidCensor-${VERSION}.pext" \
+            "stupidcensor-local-helper-${VERSION}.zip" \
+            "stupidcensor-repository-${VERSION}.zip" \
+            "stupidCensor-${VERSION}-source.zip" > "SHA256SUMS-${VERSION}.txt")
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="$GITHUB_REF_NAME"
+          NOTES="RELEASE_NOTES-${VERSION}.md"
+          ASSETS=(
+            "dist/stupidCensor-${VERSION}.pext"
+            "dist/stupidcensor-local-helper-${VERSION}.zip"
+            "dist/stupidcensor-repository-${VERSION}.zip"
+            "dist/stupidCensor-${VERSION}-source.zip"
+            "dist/SHA256SUMS-${VERSION}.txt"
+          )
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          else
+            if [[ -f "$NOTES" ]]; then
+              gh release create "$TAG" --title "stupidCensor ${VERSION}" \
+                --notes-file "$NOTES" "${ASSETS[@]}"
+            else
+              gh release create "$TAG" --title "stupidCensor ${VERSION}" \
+                --generate-notes "${ASSETS[@]}"
+            fi
+          fi
