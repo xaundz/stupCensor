@@ -206,7 +206,7 @@
             <p>Установка stupidCensor и настройка облачной библиотеки замен для Яндекс Музыки.</p>
             <div class="chips">
                 <span class="chip">PulseSync legacy script</span>
-                <span class="chip">версия 1.3.1</span>
+                <span class="chip">версия 1.5.0</span>
                 <span class="chip">xaunds</span>
                 <span class="chip">GitHub Releases + Actions</span>
             </div>
@@ -221,7 +221,7 @@
         <a href="#install"><span>05</span>Установка</a>
         <a href="#connect"><span>06</span>Подключение</a>
         <a href="#usage"><span>07</span>Использование</a>
-        <a href="#youtube"><span>08</span>YouTube cookies</a>
+        <a href="#youtube"><span>08</span>YouTube и прокси</a>
         <a href="#data"><span>09</span>Данные</a>
         <a href="#problems"><span>10</span>Проблемы</a>
         <a href="#limits"><span>11</span>Ограничения</a>
@@ -234,7 +234,7 @@
             <div class="card">
                 <h3>Что делает аддон</h3>
                 <ul>
-                    <li>Ищет альтернативные записи на YouTube, SoundCloud, Rutube и Dailymotion.</li>
+                    <li>Ищет альтернативные записи на YouTube и SoundCloud.</li>
                     <li>Показывает кандидатов и скачивает только выбранную запись.</li>
                     <li>Публикует выбранный файл в ваш GitHub Releases.</li>
                     <li>Записывает замену в <code>list.json</code>.</li>
@@ -246,7 +246,7 @@
                 <ul>
                     <li>Владельцу нужен публичный репозиторий и GitHub-токен. Друзьям для чтения токен не нужен; для добавления — свой токен и подтверждение владельцем.</li>
                     <li>Автопроверка не определяет цензуру: проверяйте источник.</li>
-                    <li>YouTube может требовать cookies с IP GitHub Actions; вручную можно добавить страницу Vimeo, Bandcamp или VK.</li>
+                    <li>YouTube может требовать cookies с IP GitHub Actions; для ручной ссылки доступны YouTube и SoundCloud.</li>
                     <li>Публикуя аудио, вы отвечаете за авторские права. Публикуйте только записи, на которые у вас есть права.</li>
                     <li>Приватный репозиторий не подойдёт.</li>
                 </ul>
@@ -321,7 +321,7 @@ git push -u origin main</code></pre>
             <li>Откройте <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">создание fine-grained token</a>.</li>
             <li><strong>Resource owner</strong> — ваш аккаунт или организация-владелец репозитория.</li>
             <li><strong>Repository access</strong> — <em>Only select repositories</em> → нужный репозиторий.</li>
-            <li><strong>Permissions</strong>: <code>Contents: Read and write</code>, <code>Actions: Read and write</code>, <code>Metadata: Read</code> (Metadata обычно включён обязательно).</li>
+            <li><strong>Permissions</strong>: <code>Contents: Read and write</code>, <code>Actions: Read and write</code>, <code>Issues: Read and write</code>, <code>Metadata: Read</code> (Metadata обычно включён обязательно). Для локальной загрузки заявок и сохранения cookies/прокси из аддона нужен <code>Issues: Read and write</code>; для секретов также добавьте <code>Secrets: Read and write</code>.</li>
             <li>Срок действия — на ваше усмотрение. Скопируйте токен: он показывается один раз.</li>
         </ol>
         <h3>Вариант B: классический token</h3>
@@ -388,7 +388,7 @@ git push -u origin main</code></pre>
         </ol>
         <div class="callout ok">
             <strong>Друзьям токен не нужен</strong>
-            Нажмите «Подключить общую библиотеку» — аддон подключит <code>xaundz/stupidcensor-cloud</code> в режиме чтения. Друзья увидят замены владельца и смогут скрывать их только у себя. Для добавления треков нужен личный токен и доступ участника; удаление из GitHub всё равно блокируется аддоном.
+            Нажмите «Подключить общую библиотеку» — аддон подключит <code>xaundz/stupidcensor-cloud</code> в режиме чтения. Друзья увидят замены владельца и смогут скрывать их только у себя. Для добавления треков нужен личный токен с <code>Actions: Read and write</code> и <code>Contents: Read</code>; collaborator-доступ не обязателен, а удаление из GitHub всё равно блокируется аддоном.
         </div>
         <table>
             <tr><th>Ошибка</th><th>Что сделать</th></tr>
@@ -418,21 +418,23 @@ git push -u origin main</code></pre>
                     <li>Откройте страницу кандидата и проверьте запись.</li>
                     <li>Убедитесь, что это не кавер, не ремикс и не цензурированная копия.</li>
                     <li>Нажмите <strong>«Сохранить»</strong> (владелец) или <strong>«На проверку»</strong> (друг).</li>
-                    <li>Владелец скачивает запись сразу. Заявка друга ждёт метку <code>uncensor-approved</code>.</li>
+                    <li>Владелец скачивает запись сразу. Заявка друга ждёт кнопку «Принять» в панели владельца.</li>
                     <li>Дождитесь статуса «Опубликовано»: библиотека обновится, замена применится.</li>
                 </ol>
             </div>
         </div>
         <h3>Ручное добавление</h3>
-        <p>Раздел «Добавить свою ссылку» принимает <strong>прямую HTTPS-ссылку на файл</strong> (m4a, mp3, aac, ogg, opus, flac, wav) или <strong>страницу источника</strong>: YouTube, SoundCloud, Rutube, Dailymotion, Vimeo, Bandcamp, VK. Ссылка должна быть постоянной: без <code>X-Amz-Signature</code>, <code>token</code>, <code>expires</code> и других временных параметров. Проверьте файл в браузере перед публикацией: аддон не анализирует содержимое. У друга ссылка тоже попадает в заявку и публикуется только после подтверждения владельцем.</p>
+        <p>Раздел «Добавить свою ссылку» принимает <strong>прямую HTTPS-ссылку на файл</strong> (m4a, mp3, aac, ogg, opus, flac, wav) или <strong>страницу источника</strong>: YouTube или SoundCloud. Ссылка должна быть постоянной: без <code>X-Amz-Signature</code>, <code>token</code>, <code>expires</code> и других временных параметров. Проверьте файл в браузере перед публикацией: аддон не анализирует содержимое. У друга ссылка тоже попадает в заявку и публикуется только после подтверждения владельцем.</p>
         <p>Для YouTube-страницы нужны cookies в секрете <code>YTDLP_COOKIES</code>; без них GitHub Actions обычно получает <code>youtube_auth</code>.</p>
         <h3>Заявки друзей</h3>
-        <p>Друг с токеном добавляет трек так же, как владелец, но worker не скачивает аудио. Вместо этого он создаёт Issue с меткой <code>uncensor-request</code> и файл <code>submissions/&lt;job_id&gt;.json</code>. Владелец открывает «Заявки» в настройках аддона или Issues репозитория и ставит одну из меток:</p>
+        <p>Друг с токеном добавляет трек так же, как владелец, но worker не скачивает аудио. Вместо этого он создаёт Issue с меткой <code>uncensor-request</code> и файл <code>submissions/&lt;job_id&gt;.json</code>. Владелец открывает «Заявки» в настройках аддона или Issues репозитория и принимает решение:</p>
         <ul>
-            <li><code>uncensor-approved</code> — worker скачивает запись, обновляет <code>list.json</code>, удаляет submission, комментирует и закрывает Issue.</li>
+            <li><code>uncensor-local</code> — кнопка «Принять» в аддоне. Локальный помощник на компьютере владельца скачивает запись, загружает M4A в Releases, обновляет <code>list.json</code> и удаляет временные файлы.</li>
+            <li><code>uncensor-approved</code> — запасной вариант: GitHub Actions скачивает запись на сервере. Используется, если локальный помощник выключен.</li>
             <li><code>uncensor-rejected</code> — worker удаляет submission и закрывает Issue без публикации.</li>
         </ul>
-        <p>Метки создаются автоматически при первой заявке. Повторное подтверждение после ошибки: снимите и снова добавьте <code>uncensor-approved</code>. Отклонять и подтверждать может только владелец репозитория; остальные получат отказ.</p>
+        <p>Локальный помощник запускается из архива <code>stupidcensor-local-helper</code> в GitHub Releases: установите ffmpeg, сохраните токен владельца и запустите <code>start-local-publisher.command</code>. Cookies YouTube помощник читает из браузера локально, в GitHub их отправлять не нужно. Если загрузка не удалась, помощник пишет причину в Issue, снимает <code>uncensor-local</code> и оставляет заявку открытой для повтора.</p>
+        <p>Отклонять и подтверждать может только владелец репозитория; остальные получат отказ. Друзьям не нужно скачивать YouTube: они получают уже готовый файл из Releases.</p>
         <h3>Библиотека и задания</h3>
         <ul>
             <li><strong>Библиотека</strong> — все записи из <code>list.json</code>; можно включить, выключить, открыть трек или скрыть связь.</li>
@@ -448,23 +450,26 @@ git push -u origin main</code></pre>
     </section>
 
     <section id="youtube">
-        <h2>Шаг 6. YouTube cookies и проверка</h2>
-        <p>С IP GitHub Actions YouTube часто требует вход: worker получает <code>Sign in to confirm you're not a bot</code>. yt-dlp принимает cookies в формате Netscape. Cookies — это доступ к аккаунту Google, поэтому храните их только в секрете репозитория и используйте отдельный аккаунт.</p>
+        <h2>Шаг 6. YouTube: вход, cookies и прокси</h2>
+        <p>С IP GitHub Actions YouTube часто требует вход: worker получает <code>Sign in to confirm you're not a bot</code>. В настройках аддона можно открыть вход в браузере, но аддон не имеет доступа к cookies браузера и не может получить их автоматически. После входа экспортируйте cookies в формате Netscape, выберите файл в аддоне или вставьте содержимое текстом. Cookies — это доступ к аккаунту Google, поэтому используйте отдельный аккаунт.</p>
         <div class="callout warn">
-            <strong>Не вставляйте cookies в аддон, Issue или файлы репозитория</strong>
-            Публичный репозиторий виден всем. Секрет <code>YTDLP_COOKIES</code> передаётся в workflow как переменная окружения и не попадает в inputs и логи. Если cookies попали в публичное место — завершите сессии Google и экспортируйте новые.
+            <strong>Cookies — это доступ к аккаунту Google</strong>
+            Не вставляйте cookies в Issue, README или файлы публичного репозитория. Поле в аддоне нужно только для передачи значения в секрет; аддон не сохраняет его локально. Секрет <code>YTDLP_COOKIES</code> передаётся в workflow как переменная окружения и не попадает в inputs и логи. Если cookies попали в публичное место — завершите сессии Google и экспортируйте новые.
         </div>
         <ol>
-            <li>Войдите в YouTube в браузере. Лучше в отдельный аккаунт, который не жалко использовать для автоматизации.</li>
-            <li>Экспортируйте cookies для <code>youtube.com</code> в формате Netscape. Например, расширением <strong>Get cookies.txt LOCALLY</strong> (Chrome/Edge/Firefox) или командой <code>yt-dlp --cookies-from-browser chrome --cookies cookies.txt --skip-download "https://www.youtube.com/watch?v=BaW_jenozKc"</code>.</li>
-            <li>Откройте репозиторий → <strong>Settings → Secrets and variables → Actions → New repository secret</strong>.</li>
-            <li>Имя: <code>YTDLP_COOKIES</code>. Значение: содержимое <code>cookies.txt</code>. Если GitHub не принимает многострочное значение, выполните на macOS <code>(printf 'base64:'; base64 -i cookies.txt) | pbcopy</code> и вставьте результат.</li>
-            <li>В аддоне откройте <strong>«GitHub» → «YouTube cookies»</strong> и нажмите <strong>«Проверить YouTube»</strong>. Результат появится в «Заданиях»: «YouTube доступен» или ошибка <code>youtube_auth</code>.</li>
+            <li>В аддоне откройте <strong>«GitHub» → «YouTube: cookies и прокси»</strong> и нажмите <strong>«Войти в YouTube»</strong>. Войдите в отдельный аккаунт, который не жалко использовать для автоматизации.</li>
+            <li>Установите расширение <strong>Get cookies.txt LOCALLY</strong> (Chrome/Edge/Firefox) и экспортируйте cookies только для <code>youtube.com</code> в формате Netscape. Альтернатива для опытных: команда <code>yt-dlp --cookies-from-browser chrome --cookies cookies.txt --skip-download "https://www.youtube.com/watch?v=BaW_jenozKc"</code>.</li>
+            <li>В аддоне выберите файл <code>cookies.txt</code> или вставьте его содержимое в поле «Или вставить cookies текстом». Если токену добавлено право <strong>Secrets: Read and write</strong>, нажмите <strong>«Загрузить cookies в GitHub»</strong>. Без этого права откройте репозиторий → <strong>Settings → Secrets and variables → Actions → New repository secret</strong>, имя <code>YTDLP_COOKIES</code>, значение — содержимое файла. Если GitHub не принимает многострочное значение, выполните на macOS <code>(printf 'base64:'; base64 -i cookies.txt) | pbcopy</code> и вставьте результат.</li>
+            <li>Нажмите <strong>«Проверить YouTube»</strong>. Проверка требует реальные cookies входа (<code>SAPISID</code> или <code>LOGIN_INFO</code>) либо настроенный прокси. Результат появится здесь и в «Заданиях»: «YouTube доступен» или ошибка <code>youtube_auth</code>/<code>cookies_invalid</code>.</li>
         </ol>
+        <div class="callout">
+            <strong>Почему нельзя войти прямо в аддоне</strong>
+            PulseSync-аддон работает в sandbox и не имеет доступа к cookies браузера или Electron-сессии. Кнопка входа открывает обычный браузер, но после входа всё равно нужен экспорт файла. Это ограничение платформы, а не ошибка настройки.
+        </div>
         <h3>Если блокировка по IP</h3>
-        <p>Иногда cookies не помогают, потому что YouTube блокирует адрес GitHub Actions. Добавьте секрет <code>YTDLP_PROXY</code> со значением <code>http://user:pass@host:port</code> или <code>socks5://host:port</code>. Прокси должен разрешать исходящие соединения к YouTube. Не публикуйте строку прокси.</p>
-        <h3>Другие источники</h3>
-        <p>Поиск автоматически проверяет YouTube, SoundCloud, Rutube и Dailymotion. SoundCloud-треки с DRM помечаются как недоступные, а worker при подтверждении пробует резервный источник. Для Vimeo, Bandcamp и VK используйте ручную страницу источника.</p>
+        <p>Иногда cookies не помогают, потому что YouTube блокирует адрес GitHub Actions. В разделе <strong>«Прокси для загрузки»</strong> укажите полный адрес <code>http://user:pass@host:port</code>, <code>https://host:port</code> или <code>socks5://host:port</code> и нажмите <strong>«Сохранить прокси в GitHub»</strong>. Аддон проверяет адрес, маскирует ввод, шифрует значение и сохраняет его в <code>YTDLP_PROXY</code>; локальные и служебные адреса отклоняются. Для сохранения из аддона нужно право <strong>Secrets: Read and write</strong>. Прокси должен разрешать исходящие соединения к YouTube; он тоже может быть заблокирован.</p>
+        <h3>SoundCloud</h3>
+        <p>Для новых поисков доступны YouTube и SoundCloud. SoundCloud-треки с DRM помечаются как недоступные; выберите другую запись. Прямая HTTPS-ссылка на аудиофайл тоже поддерживается.</p>
     </section>
 
     <section id="data">
@@ -513,7 +518,7 @@ git push -u origin main</code></pre>
         <h2>Если что-то не работает</h2>
         <details>
             <summary>Кандидаты не найдены</summary>
-            <p>Измените название/исполнителя, уберите лишние слова, укажите длительность или конкретную страницу поддерживаемого источника. Проверьте журнал Actions: возможно, источник ответил 403 или потребовал вход. Для YouTube добавьте секрет <code>YTDLP_COOKIES</code> (Netscape cookies) и нажмите «Проверить YouTube»; при блокировке по IP попробуйте <code>YTDLP_PROXY</code>. SoundCloud-треки с DRM скачать нельзя — аддон помечает их как недоступные и пробует резервный источник.</p>
+            <p>Измените название/исполнителя, уберите лишние слова, укажите длительность или конкретную страницу поддерживаемого источника. Проверьте журнал Actions: возможно, источник ответил 403 или потребовал вход. Для YouTube загрузите cookies и/или прокси в настройках аддона и нажмите «Проверить YouTube». SoundCloud-треки с DRM скачать нельзя — аддон помечает их как недоступные и предлагает выбрать другую запись.</p>
         </details>
         <details>
             <summary>Задание зависло в очереди</summary>
@@ -525,7 +530,7 @@ git push -u origin main</code></pre>
         </details>
         <details>
             <summary>Заявка друга не публикуется</summary>
-            <p>Проверьте, что Issue открыт, содержит метку <code>uncensor-request</code> и что метку <code>uncensor-approved</code> поставил именно владелец репозитория. Approval workflow должен быть в ветке по умолчанию и включён во вкладке Actions. Если публикация упала, в Issue появится комментарий с ошибкой; исправьте причину, снимите и снова добавьте <code>uncensor-approved</code>.</p>
+            <p>Проверьте, что Issue открыт и содержит метку <code>uncensor-request</code>. Для локальной загрузки должна быть метка <code>uncensor-local</code>, а на компьютере владельца запущен <code>start-local-publisher.command</code>. Для запасного варианта через GitHub Actions нужна метка <code>uncensor-approved</code> и включённый approval workflow. Если публикация упала, в Issue появится комментарий с ошибкой; исправьте причину и примите заявку снова.</p>
         </details>
         <details>
             <summary>Подмена не слышна</summary>
@@ -552,7 +557,7 @@ git push -u origin main</code></pre>
             Аддон сравнивает название, исполнителя и длительность. Он не анализирует текст, не находит вырезанные фрагменты и не гарантирует, что запись не является кавером, ремиксом или другой версией. Финальное решение — за пользователем.
         </div>
         <ul>
-            <li>Источники могут быть недоступны с IP GitHub Actions или требовать cookies/вход. Для YouTube добавьте <code>YTDLP_COOKIES</code> и проверьте доступ в настройках; при блокировке по IP используйте <code>YTDLP_PROXY</code>. SoundCloud с DRM не скачивается — это внешнее ограничение, а не ошибка аддона.</li>
+            <li>Источники могут быть недоступны с IP GitHub Actions или требовать cookies/вход. Для YouTube загрузите <code>YTDLP_COOKIES</code> и/или <code>YTDLP_PROXY</code> в настройках аддона и проверьте доступ. SoundCloud с DRM не скачивается — это внешнее ограничение, а не ошибка аддона.</li>
             <li>Поиск не скачивает аудио. Файл скачивается и перекодируется в M4A/AAC 160 kbps только после подтверждения; качество зависит от источника.</li>
             <li>GitHub Releases и Actions имеют лимиты аккаунта. Большие библиотеки требуют места.</li>
             <li>Публичный репозиторий означает публичные ссылки и имена файлов. Не добавляйте токены и личные данные в публичные файлы.</li>
@@ -565,7 +570,7 @@ git push -u origin main</code></pre>
     </section>
 
     <div class="footer">
-        <span>stupidCensor 1.3.1 · xaunds</span>
+        <span>stupidCensor 1.5.0 · xaunds</span>
         <span>PulseSync Addon Development License 1.1 · <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noreferrer">токен</a> · <a href="https://github.com/new" target="_blank" rel="noreferrer">репозиторий</a></span>
     </div>
 </div>

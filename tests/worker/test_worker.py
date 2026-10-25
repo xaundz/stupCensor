@@ -198,6 +198,59 @@ class CookieTests(unittest.TestCase):
                 self.assertEqual(list(Path(directory).iterdir()), [])
 
 
+class LoginCookieTests(unittest.TestCase):
+    COOKIES = (
+        "# Netscape HTTP Cookie File\n"
+        ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSAPISID\tsynthetic-login\n"
+    )
+
+    def test_detects_login_cookies_plain_and_base64(self):
+        self.assertTrue(worker.has_youtube_login_cookies(self.COOKIES))
+        encoded = "base64:" + base64.b64encode(self.COOKIES.encode()).decode()
+        self.assertTrue(worker.has_youtube_login_cookies(encoded))
+
+    def test_login_cookie_requires_youtube_and_value(self):
+        self.assertFalse(worker.has_youtube_login_cookies(
+            "# Netscape HTTP Cookie File\n.google.com\tTRUE\t/\tTRUE\t2147483647\tSAPISID\tsynthetic-login\n"
+        ))
+        self.assertFalse(worker.has_youtube_login_cookies(
+            "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2147483647\tSAPISID\t\n"
+        ))
+        self.assertFalse(worker.has_youtube_login_cookies(
+            "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2147483647\tempty\tsynthetic\n"
+        ))
+
+    def test_invalid_base64_is_scoped(self):
+        with self.assertRaises(worker.WorkerError) as raised:
+            worker.has_youtube_login_cookies("base64:secret!")
+        self.assertEqual(raised.exception.code, "cookies_invalid")
+        self.assertNotIn("secret", str(raised.exception))
+
+
+class LocalBrowserCookieTests(unittest.TestCase):
+    def test_parses_browser_and_profile(self):
+        with patch.dict(os.environ, {"YTDLP_COOKIES_FROM_BROWSER": "chrome:Profile 1"}, clear=True):
+            self.assertEqual(worker.local_browser_cookie_option(), ("chrome", "Profile 1", None, None))
+        with patch.dict(os.environ, {"YTDLP_COOKIES_FROM_BROWSER": "Firefox"}, clear=True):
+            self.assertEqual(worker.local_browser_cookie_option(), ("firefox", None, None, None))
+
+    def test_rejects_unknown_browser(self):
+        with patch.dict(os.environ, {"YTDLP_COOKIES_FROM_BROWSER": "not-a-browser"}, clear=True):
+            with self.assertRaises(worker.WorkerError) as raised:
+                worker.local_browser_cookie_option()
+        self.assertEqual(raised.exception.code, "cookies_browser_invalid")
+
+    def test_youtube_uses_browser_only_without_cookie_file(self):
+        with patch.dict(
+            os.environ,
+            {"YTDLP_COOKIES": "", "YTDLP_COOKIES_FROM_BROWSER": "chrome", "YTDLP_PROXY": ""},
+            clear=True,
+        ):
+            options = worker.base_ydl_options("https://www.youtube.com/watch?v=test")
+            self.assertEqual(options["cookiesfrombrowser"], ("chrome", None, None, None))
+            self.assertNotIn("cookiesfrombrowser", worker.base_ydl_options("soundcloud"))
+
+
 class DownloadTests(unittest.TestCase):
     def test_m4a_download_and_decode_errors(self):
         class DownloadYoutubeDL(FakeYoutubeDL):
@@ -250,16 +303,86 @@ class DownloadTests(unittest.TestCase):
         self.assertIs(raised.exception, error)
 
 
+    def test_youtube_auth_retries_with_embedded_client(self):
+        calls = []
+
+        class DownloadYoutubeDL(FakeYoutubeDL):
+            def __init__(self, options):
+                super().__init__(options)
+                calls.append(options)
+
+            def extract_info(self, url, download=False):
+                if len(calls) == 1:
+                    raise RuntimeError("Sign in to confirm you're not a bot")
+                path = Path(self.options["outtmpl"].replace("%(ext)s", "m4a"))
+                path.write_bytes(b"synthetic m4a")
+                return {
+                    "id": "BaW_jenozKc",
+                    "webpage_url": "https://www.youtube.com/watch?v=BaW_jenozKc",
+                    "requested_downloads": [{"filepath": str(path)}],
+                }
+
+        class Module:
+            YoutubeDL = DownloadYoutubeDL
+
+        def transcode(source, destination):
+            destination.write_bytes(b"synthetic output")
+            return 245.0
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch("uncensor_worker.yt_dlp_auth_options", return_value={}), \
+                patch("uncensor_worker.yt_dlp_module", return_value=Module()), \
+                patch("uncensor_worker.transcode_to_m4a", side_effect=transcode):
+            output, duration, info = worker.download_and_transcode(
+                "https://www.youtube.com/watch?v=BaW_jenozKc", Path(directory),
+            )
+            self.assertTrue(output.exists())
+        self.assertEqual(output.name, "transcoded.m4a")
+        self.assertEqual(duration, 245.0)
+        self.assertEqual(info["id"], "BaW_jenozKc")
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn("extractor_args", calls[0])
+        self.assertEqual(calls[1]["extractor_args"], {"youtube": {"player_client": ["web_embedded"]}})
+
+
 class CheckTests(unittest.TestCase):
     def test_check_reports_success(self):
         job = FakeCheckJob()
-        with patch.dict(os.environ, {"YTDLP_COOKIES": "cookies"}, clear=True), \
+        login_cookies = (
+            "# Netscape HTTP Cookie File\n"
+            ".youtube.com\tTRUE\t/\tTRUE\t2147483647\tSAPISID\tsynthetic-login\n"
+        )
+        with patch.dict(os.environ, {"YTDLP_COOKIES": login_cookies}, clear=True), \
                 patch("uncensor_worker.yt_dlp_auth_options", return_value={}), \
                 patch("uncensor_worker.yt_dlp_module", return_value=FakeYoutubeModule()):
             worker.handle_check(None, job)
         self.assertEqual(job.writes[0][0], "ready")
         self.assertEqual(job.writes[0][1]["candidates"], [])
         self.assertIn("cookies", job.writes[0][1]["note"])
+
+    def test_check_rejects_cookies_without_login(self):
+        job = FakeCheckJob()
+        with patch.dict(os.environ, {
+            "YTDLP_COOKIES": "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2147483647\tempty\t\n",
+        }, clear=True), \
+                patch("uncensor_worker.yt_dlp_module", return_value=FakeYoutubeModule()):
+            with self.assertRaises(worker.WorkerError) as raised:
+                worker.handle_check(None, job)
+        self.assertEqual(raised.exception.code, "cookies_invalid")
+        self.assertIn("SAPISID", raised.exception.message)
+        self.assertEqual(job.writes, [])
+
+    def test_check_allows_proxy_without_login_cookies(self):
+        job = FakeCheckJob()
+        with patch.dict(os.environ, {
+            "YTDLP_COOKIES": "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t2147483647\tempty\t\n",
+            "YTDLP_PROXY": "http://203.0.113.10:8080",
+        }, clear=True), \
+                patch("uncensor_worker.yt_dlp_auth_options", return_value={}), \
+                patch("uncensor_worker.yt_dlp_module", return_value=FakeYoutubeModule()):
+            worker.handle_check(None, job)
+        self.assertEqual(job.writes[0][0], "ready")
+        self.assertIn("proxy", job.writes[0][1]["note"])
 
     def test_check_classifies_bot_check(self):
         class FailingYoutubeDL(FakeYoutubeDL):

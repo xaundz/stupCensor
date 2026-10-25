@@ -433,6 +433,7 @@
 }
 
 .uc-field input,
+.uc-field textarea,
 .uc-panel input:not([type='range']):not([type='checkbox']) {
     width: 100%;
     min-width: 0;
@@ -446,20 +447,34 @@
 }
 
 .uc-field input:focus,
+.uc-field textarea:focus,
 .uc-panel input:not([type='range']):not([type='checkbox']):focus {
     border-color: rgba(255, 216, 77, 0.65);
     box-shadow: 0 0 0 2px rgba(255, 216, 77, 0.1);
 }
 
 .uc-field input::placeholder,
+.uc-field textarea::placeholder,
 .uc-panel input::placeholder {
     color: #696976;
+}
+
+.uc-field textarea {
+    min-height: 104px;
+    resize: vertical;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    line-height: 1.45;
 }
 
 .uc-inline {
     display: flex;
     align-items: center;
     gap: 8px;
+}
+
+.uc-divider {
+    border-top: 1px solid var(--uc-line);
+    margin: 15px 0;
 }
 
 .uc-wrap {

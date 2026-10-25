@@ -3,7 +3,7 @@ import test from 'node:test'
 import sodium from 'libsodium-wrappers'
 import type { AddonApi } from '@pulsesync/addon-sdk'
 import { COOKIE_FILE_LIMIT, encryptCookies, normalizeYoutubeCookies } from '../src/lib/cookies.ts'
-import { initialize, saveSetup, saveYoutubeCookies, setTestAsUser } from '../src/store.ts'
+import { initialize, saveSetup, saveYoutubeCookies, saveYoutubeProxy, setTestAsUser } from '../src/store.ts'
 import { settings } from '../src/legacy/settings.ts'
 import { SHARED_REPO } from '../src/legacy/constants.ts'
 
@@ -91,10 +91,12 @@ test('owner secret upload sends ciphertext only and rejects guests, denied permi
         } },
     } as unknown as AddonApi
     const file = new File([cookies], 'cookies.txt', { type: 'text/plain' })
+    const proxy = 'http://proxy-user:proxy-secret@203.0.113.10:8080'
     try {
         await initialize(api)
         await new Promise(resolve => setTimeout(resolve, 0))
         await assert.rejects(() => saveYoutubeCookies(file), /владельц/)
+        await assert.rejects(() => saveYoutubeProxy(proxy), /владельц/)
         await saveSetup({ repo: SHARED_REPO, token: 'synthetic-owner-token', rememberToken: false })
         await saveYoutubeCookies(file)
         assert.equal(writes.length, 1)
@@ -107,9 +109,22 @@ test('owner secret upload sends ciphertext only and rejects guests, denied permi
         assert.equal(sodium.to_string(decrypted), cookies)
         sodium.memzero(decrypted)
         assert.ok(!JSON.stringify([...storage]).includes('synthetic-youtube-session'))
+        await saveYoutubeProxy(proxy)
+        assert.equal(writes.length, 2)
+        assert.equal(writes[1].url, `https://api.github.com/repos/${SHARED_REPO}/actions/secrets/YTDLP_PROXY`)
+        assert.equal(writes[1].body.key_id, 'test-key')
+        assert.ok(!JSON.stringify(writes).includes('proxy-secret'))
+        const decryptedProxy = sodium.crypto_box_seal_open(
+            sodium.from_base64(writes[1].body.encrypted_value, sodium.base64_variants.ORIGINAL), keys.publicKey, keys.privateKey,
+        )
+        assert.equal(sodium.to_string(decryptedProxy), proxy)
+        sodium.memzero(decryptedProxy)
+        await assert.rejects(() => saveYoutubeProxy('http://localhost:8080'), /Локальные/)
+        assert.equal(writes.length, 2)
         permissionDenied = true
         await assert.rejects(() => saveYoutubeCookies(file), /Secrets: Read and write/)
-        assert.equal(writes.length, 1)
+        await assert.rejects(() => saveYoutubeProxy(proxy), /Secrets: Read and write/)
+        assert.equal(writes.length, 2)
         permissionDenied = false
         delayedKey = true
         const pending = saveYoutubeCookies(file)
@@ -117,10 +132,10 @@ test('owner secret upload sends ciphertext only and rejects guests, denied permi
         setTestAsUser(true)
         releaseKey()
         await assert.rejects(() => pending, /режим изменился/)
-        assert.equal(writes.length, 1)
+        assert.equal(writes.length, 2)
         setTestAsUser(false)
         await assert.rejects(() => saveYoutubeCookies(new File(['invalid synthetic-private-value'], 'bad.txt')), /Netscape/)
-        assert.equal(writes.length, 1)
+        assert.equal(writes.length, 2)
     } finally {
         sodium.memzero(keys.privateKey)
         for (const callback of cleanup) callback()

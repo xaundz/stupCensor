@@ -12,8 +12,12 @@
    - **Contents: Read and write**
    - **Actions: Read and write**
    - **Metadata: Read**
+   - **Secrets: Read and write** — чтобы аддон мог загрузить cookies и прокси (иначе добавьте их вручную).
+   - **Issues: Read and write** — чтобы принимать заявки в аддоне.
 
-Друзьям для чтения общей библиотеки токен не нужен. Для добавления записей друг подключает свой fine-grained token с правами **Actions: Read and write**, **Contents: Read**, **Metadata: Read** — без Contents write, чтобы не обходить проверку. Его трек попадает в Issue с меткой `uncensor-request`; владелец ставит `uncensor-approved` или `uncensor-rejected`. Только после `uncensor-approved` worker скачивает аудио и обновляет `list.json`. Метки создаются автоматически при первой заявке. Прямой collaborator с Contents write всё ещё может обойти это ограничение через сайт GitHub, поэтому не выдавайте такой доступ без необходимости.
+Друзьям для чтения общей библиотеки токен не нужен. Для добавления записей друг подключает свой fine-grained token с правами **Actions: Read and write**, **Contents: Read**, **Metadata: Read** — без Contents write, чтобы не обходить проверку. Его трек попадает в Issue с меткой `uncensor-request`.
+
+Кнопка «Принять» в аддоне ставит `uncensor-local`. Локальный помощник на компьютере владельца скачивает аудио, загружает готовый M4A в Releases, обновляет `list.json` и удаляет временные файлы. Помощник лежит в `tools/` и в архиве `stupidcensor-local-helper` из Releases. Для репозитория, отличного от `xaundz/stupidcensor-cloud`, запускайте его так: `STUPIDCENSOR_REPO=владелец/репозиторий ./tools/start-local-publisher.command`. Метка `uncensor-approved` — запасной вариант для публикации через GitHub Actions. `uncensor-rejected` отклоняет заявку. Прямой collaborator с Contents write всё ещё может обойти это ограничение через сайт GitHub, поэтому не выдавайте такой доступ без необходимости.
 
 Подробная инструкция — в `setup-ru.html`.
 
@@ -27,9 +31,10 @@
 ## Важно
 
 - Автоматическая проверка не определяет цензуру. Проверяйте источник перед публикацией.
-- Поиск: YouTube, SoundCloud, Rutube и Dailymotion. В ручную ссылку можно вставить страницу YouTube, SoundCloud, Rutube, Dailymotion, Vimeo, Bandcamp или VK.
-- YouTube может блокировать IP GitHub Actions. Добавьте секрет `YTDLP_COOKIES` с cookies в формате Netscape или `base64:<...>`; при блокировке по IP — `YTDLP_PROXY`. Проверка доступа есть в настройках аддона. SoundCloud с DRM скачать нельзя; worker пробует резервный источник.
+- Поиск: YouTube и SoundCloud. В ручную ссылку можно вставить страницу YouTube или SoundCloud.
+- Для локальной загрузки прокси не нужен: помощник использует домашний IP и cookies выбранного браузера. Если YouTube блокирует и домашний IP, запустите помощник с `--proxy`.
+- Запасной путь через GitHub Actions может блокироваться YouTube по IP. Для него добавьте `YTDLP_COOKIES` в формате Netscape или `base64:<...>` и/или `YTDLP_PROXY`. Автоматически читать cookies браузера аддон не умеет. SoundCloud с DRM скачать нельзя; выберите другую запись.
 - Аудио публично. Публикуя его, владелец репозитория отвечает за соблюдение авторских прав. Публикуйте только записи, на которые у вас есть права.
 - Приватный репозиторий не подходит для воспроизведения по публичным ссылкам.
 
-stupidCensor 1.3.1 · xaunds · PulseSync Addon Development License 1.1.
+stupidCensor 1.5.0 · xaunds · PulseSync Addon Development License 1.1.

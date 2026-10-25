@@ -174,8 +174,9 @@ export function SettingsTab() {
                 </div>
                 <div className="uc-hint">
                     Войдите личным fine-grained token владельца публичного репозитория, не через OAuth.
-                    Contents и Actions: Read and write; Metadata: Read. Для принятия и отклонения заявок
-                    в аддоне дополнительно нужен Issues: Read and write. Без этого права проверяйте заявки на сайте GitHub.
+                    Contents и Actions: Read and write; Metadata: Read. Для загрузки cookies и прокси
+                    дополнительно нужен Secrets: Read and write. Для принятия и отклонения заявок
+                    в аддоне нужен Issues: Read and write; без него проверяйте заявки на сайте GitHub.
                 </div>
                 <div className="uc-grid uc-grid-1">
                     <label className="uc-field">
@@ -323,9 +324,9 @@ export function SettingsTab() {
                         Без него ставьте метки на сайте GitHub. Гостям токен не нужен.
                     </div>
                     <div className="uc-muted uc-small">
-                        Добавления друзей сначала попадают в GitHub Issues. Владелец ставит метку
-                        <code> uncensor-approved</code> или <code>uncensor-rejected</code>, и только после этого
-                        запись публикуется или отклоняется.
+                        Добавления друзей сначала попадают в GitHub Issues. Кнопка «Принять» ставит
+                        <code> uncensor-local</code>: запись скачивает локальный помощник владельца и загружает
+                        готовый файл в Releases. Метка <code>uncensor-rejected</code> отклоняет заявку.
                     </div>
                     <div className="uc-muted uc-small">
                         Публикуйте только записи, на которые у вас есть права. Репозиторий и аудиофайлы видны всем.

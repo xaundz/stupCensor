@@ -45,7 +45,7 @@ export function RequestsTab() {
         return () => { cancelled = true }
     }, [repo, viewer, admin, refresh])
 
-    const decide = async (request: ReviewRequest, decision: 'approved' | 'rejected') => {
+    const decide = async (request: ReviewRequest, decision: 'local' | 'rejected') => {
         if (submitting.current || sent[request.number] || !isRepositoryAdmin()) return
         submitting.current = true
         const current = session.current
@@ -54,7 +54,12 @@ export function RequestsTab() {
         try {
             await reviewRequest(request.number, decision)
             if (current !== session.current) return
-            setSent(previous => ({ ...previous, [request.number]: decision === 'approved' ? 'Принятие: решение отправлено.' : 'Отклонение: решение отправлено.' }))
+            setSent(previous => ({
+                ...previous,
+                [request.number]: decision === 'local'
+                    ? 'Принятие: локальная загрузка разрешена.'
+                    : 'Отклонение: решение отправлено.',
+            }))
         } catch (reviewError) {
             if (current === session.current) setError(reviewError instanceof Error ? reviewError.message : String(reviewError))
         } finally {
@@ -81,15 +86,20 @@ export function RequestsTab() {
                 </div>
                 <div className="uc-hint">
                     Прослушайте источник по ссылке в комментарии бота на GitHub перед принятием.
-                    Решение ставит метку и передаёт обработку GitHub workflow; это ещё не подтверждение публикации.
-                    Итог и доступные записи появятся в заявке на GitHub.
+                    Кнопка «Принять» ставит метку <code>uncensor-local</code>: запись скачает локальный помощник
+                    на компьютере владельца и загрузит готовый файл в GitHub Releases. IP GitHub Actions для скачивания
+                    не используется.
+                </div>
+                <div className="uc-hint">
+                    Локальный помощник должен быть запущен. Если он выключен, заявка будет ждать и не потеряется.
                 </div>
                 <div className="uc-row-actions uc-wrap">
                     <a className="uc-link" href={issuesUrl} target="_blank" rel="noreferrer">Открыть заявки в GitHub</a>
                 </div>
                 <div className="uc-muted uc-small uc-mt">
                     Для решений из аддона нужен Issues: Read and write у токена владельца.
-                    Иначе поставьте uncensor-approved или uncensor-rejected на сайте GitHub.
+                    Для загрузки через GitHub Actions вручную поставьте uncensor-approved на сайте GitHub;
+                    для отклонения используйте кнопку «Отклонить» или метку uncensor-rejected.
                 </div>
                 {error ? <div className="uc-inline-error" role="alert">{error} Проверьте заявку или отправьте решение на GitHub по ссылкам.</div> : null}
                 {!loading && !error && !requests.length ? <div className="uc-muted uc-mt">Новых заявок нет.</div> : null}
@@ -103,10 +113,10 @@ export function RequestsTab() {
                             <a className="uc-link" href={request.url} target="_blank" rel="noreferrer">Открыть и прослушать в GitHub</a>
                         </div>
                         {sent[request.number] ? (
-                            <div className="uc-check uc-ok-text" role="status">{sent[request.number]} Ожидаем GitHub workflow; итог проверяйте в GitHub.</div>
+                            <div className="uc-check uc-ok-text" role="status">{sent[request.number]} Ожидаем локальный помощник; итог появится в GitHub.</div>
                         ) : (
                             <div className="uc-row-actions uc-wrap uc-mt">
-                                <button type="button" className="uc-btn uc-btn-primary uc-btn-small" disabled={!!busy || loading} onClick={() => void decide(request, 'approved')}>Принять</button>
+                                <button type="button" className="uc-btn uc-btn-primary uc-btn-small" disabled={!!busy || loading} onClick={() => void decide(request, 'local')}>Принять</button>
                                 <button type="button" className="uc-btn uc-btn-small uc-danger" disabled={!!busy || loading} onClick={() => void decide(request, 'rejected')}>Отклонить</button>
                                 {busy === request.number ? <span className="uc-muted uc-small" role="status">Отправляем решение…</span> : null}
                             </div>

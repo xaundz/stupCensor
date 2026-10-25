@@ -32,7 +32,7 @@ export function normalizeYoutubeCookies(text: string, now = Date.now()): string 
     return result
 }
 
-export async function encryptCookies(contents: string, publicKey: string): Promise<string> {
+export async function encryptSecret(contents: string, publicKey: string): Promise<string> {
     try {
         const { default: sodium } = await import('libsodium-wrappers')
         await sodium.ready
@@ -44,6 +44,14 @@ export async function encryptCookies(contents: string, publicKey: string): Promi
         } finally {
             sodium.memzero(bytes)
         }
+    } catch {
+        throw new Error('Не удалось зашифровать данные ключом GitHub. Попробуйте ещё раз.')
+    }
+}
+
+export async function encryptCookies(contents: string, publicKey: string): Promise<string> {
+    try {
+        return await encryptSecret(contents, publicKey)
     } catch {
         throw new CookieFileError('Не удалось зашифровать cookies ключом GitHub. Попробуйте ещё раз.')
     }

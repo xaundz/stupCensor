@@ -36,7 +36,8 @@ import { resolveTrack } from './lib/tracks.ts'
 import { settings } from './legacy/settings.ts'
 import { SHARED_REPO } from './legacy/constants.ts'
 import { buildRequestUrl } from './lib/requests.ts'
-import { COOKIE_FILE_LIMIT, CookieFileError, encryptCookies, normalizeYoutubeCookies } from './lib/cookies.ts'
+import { COOKIE_FILE_LIMIT, CookieFileError, encryptCookies, encryptSecret, normalizeYoutubeCookies } from './lib/cookies.ts'
+import { ProxyUrlError, normalizeProxyUrl } from './lib/proxy.ts'
 
 const CONFIG_KEY = 'stupidcensor.config.v1'
 const TOKEN_KEY = 'stupidcensor.token.v1'
@@ -811,6 +812,45 @@ export async function saveYoutubeCookies(file: File): Promise<void> {
     }
 }
 
+export async function saveYoutubeProxy(value: string): Promise<void> {
+    if (!isRepositoryAdmin()) throw new Error('Сохранение прокси доступно только подтверждённому владельцу.')
+    const proxy = normalizeProxyUrl(value)
+    const api = requireApi()
+    const config = state.config
+    const currentToken = token
+    const revision = accessRevision
+    const isCurrent = () => active && apiRef === api && state.config === config && token === currentToken &&
+        revision === accessRevision && isRepositoryAdmin()
+    const checkAccess = () => {
+        if (!isCurrent()) throw new ProxyUrlError('Аккаунт или режим изменился. Сохранение прокси отменено.')
+    }
+    try {
+        const client = apiFor(api)
+        const access = await client.getAccessInfo()
+        checkAccess()
+        if (!access.canAdmin) throw new ProxyUrlError('GitHub не подтвердил аккаунт владельца.')
+        const response = await client.request(`/repos/${client.repo}/actions/secrets/public-key`)
+        const key = await response.json() as { key?: unknown; key_id?: unknown }
+        checkAccess()
+        if (typeof key.key !== 'string' || typeof key.key_id !== 'string' || !key.key_id || key.key_id.length > 200) {
+            throw new ProxyUrlError('GitHub не вернул ключ шифрования. Попробуйте сохранить прокси ещё раз.')
+        }
+        const encrypted = await encryptSecret(proxy, key.key)
+        checkAccess()
+        await client.request(`/repos/${client.repo}/actions/secrets/YTDLP_PROXY`, {
+            method: 'PUT', body: { encrypted_value: encrypted, key_id: key.key_id },
+        })
+        checkAccess()
+    } catch (error) {
+        if (error instanceof ProxyUrlError) throw error
+        if (error instanceof GitHubError && (error.status === 403 || error.status === 404)) {
+            throw new Error('Нет доступа к секретам GitHub. Добавьте токену владельца Secrets: Read and write для этого репозитория или добавьте YTDLP_PROXY на сайте GitHub.')
+        }
+        if (error instanceof GitHubError && error.status === 401) throw new Error('GitHub отклонил токен владельца. Войдите заново.')
+        throw new Error('Не удалось сохранить прокси в GitHub. Проверьте соединение и повторите попытку. Адрес не сохранён в аддоне.')
+    }
+}
+
 export async function startManualAdd(track: TrackRef, meta: TrackSearchMeta, directUrl: string): Promise<JobRecord> {
     const api = requireApi()
     const awaiting = state.jobs.find(
@@ -1494,7 +1534,8 @@ export async function listReviewRequests() {
         if (revision !== accessRevision || !active || !isRepositoryAdmin()) throw new Error('Вход владельца изменился. Обновите заявки.')
         for (const issue of issues) {
             const labels = (issue.labels || []).map(label => typeof label === 'string' ? label : label.name)
-            if (issue.pull_request || labels.includes('uncensor-approved') || labels.includes('uncensor-rejected')) continue
+            if (issue.pull_request || labels.includes('uncensor-approved') || labels.includes('uncensor-local') ||
+                labels.includes('uncensor-rejected')) continue
             if (!Number.isSafeInteger(issue.number) || issue.number <= 0) continue
             requests.push({
                 number: issue.number,
@@ -1508,9 +1549,9 @@ export async function listReviewRequests() {
     }
 }
 
-export async function reviewRequest(issueNumber: number, decision: 'approved' | 'rejected'): Promise<void> {
+export async function reviewRequest(issueNumber: number, decision: 'local' | 'rejected'): Promise<void> {
     if (!isRepositoryAdmin()) throw new Error('Решение может отправить только подтверждённый владелец.')
-    if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0 || !['approved', 'rejected'].includes(decision)) {
+    if (!Number.isSafeInteger(issueNumber) || issueNumber <= 0 || !['local', 'rejected'].includes(decision)) {
         throw new Error('Некорректное решение по заявке.')
     }
     const revision = accessRevision
@@ -1524,10 +1565,19 @@ export async function reviewRequest(issueNumber: number, decision: 'approved' | 
     const issue = await response.json() as { state?: string; pull_request?: unknown; labels?: Array<string | { name?: string }> }
     const labels = (issue.labels || []).map(label => typeof label === 'string' ? label : label.name)
     if (issue.state !== 'open' || issue.pull_request || !labels.includes('uncensor-request') ||
-        labels.includes('uncensor-approved') || labels.includes('uncensor-rejected')) {
+        labels.includes('uncensor-approved') || labels.includes('uncensor-local') || labels.includes('uncensor-rejected')) {
         throw new Error('Заявка уже рассмотрена или недоступна. Обновите список.')
     }
     if (revision !== accessRevision || !active || !isRepositoryAdmin()) throw new Error('Вход владельца изменился.')
-    await client.request(`${path}/labels`, { method: 'POST', body: { labels: [`uncensor-${decision}`] } })
+    const label = decision === 'local'
+        ? { name: 'uncensor-local', color: '1d76db', description: 'Владелец разрешил локальную загрузку' }
+        : { name: 'uncensor-rejected', color: 'd73a4a', description: 'Владелец отклонил заявку' }
+    try {
+        await client.request(`/repos/${client.repo}/labels`, { method: 'POST', body: label })
+    } catch (error) {
+        if (!(error instanceof GitHubError) || error.status !== 422) throw error
+    }
+    if (revision !== accessRevision || !active || !isRepositoryAdmin()) throw new Error('Вход владельца изменился.')
+    await client.request(`${path}/labels`, { method: 'POST', body: { labels: [label.name] } })
     if (revision !== accessRevision || !active || !isRepositoryAdmin()) throw new Error('Вход владельца изменился. Проверьте решение в GitHub.')
 }

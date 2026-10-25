@@ -47,6 +47,7 @@ SUBMISSIONS_DIR = "submissions"
 APPROVAL_LABELS = {
     "request": ("uncensor-request", "fbca04", "Заявка на добавление записи в общую библиотеку"),
     "approved": ("uncensor-approved", "0e8a16", "Владелец разрешил публикацию заявки"),
+    "local": ("uncensor-local", "1d76db", "Владелец разрешил локальную загрузку на своём компьютере"),
     "rejected": ("uncensor-rejected", "d73a4a", "Владелец отклонил заявку"),
     "published": ("uncensor-published", "5319e7", "Заявка опубликована в библиотеке"),
 }
@@ -824,32 +825,121 @@ def yt_dlp_module() -> Any:
     return yt_dlp
 
 
+YOUTUBE_LOGIN_COOKIE_NAMES = {"SAPISID", "SID", "LOGIN_INFO", "__SECURE-1PSID", "__SECURE-3PSID"}
+LOCAL_COOKIE_BROWSERS = {
+    "brave",
+    "chrome",
+    "chromium",
+    "edge",
+    "firefox",
+    "opera",
+    "safari",
+    "vivaldi",
+    "whale",
+}
+
+
+def decode_cookie_secret(value: str) -> str:
+    if not value.startswith("base64:"):
+        return value
+    try:
+        return base64.b64decode("".join(value[7:].split()), validate=True).decode("utf-8")
+    except Exception:
+        raise WorkerError(
+            "cookies_invalid",
+            "Секрет YTDLP_COOKIES должен содержать cookies в формате Netscape или base64:.",
+        ) from None
+
+
+def has_youtube_login_cookies(value: str) -> bool:
+    contents = decode_cookie_secret(value)
+    for line in contents.splitlines():
+        if not line or (line.startswith("#") and not line.startswith("#HttpOnly_")):
+            continue
+        parts = line.split("\t")
+        if len(parts) != 7:
+            continue
+        host = parts[0].removeprefix("#HttpOnly_").lstrip(".").lower()
+        if host != "youtube.com" and not host.endswith(".youtube.com"):
+            continue
+        if parts[5].upper() in YOUTUBE_LOGIN_COOKIE_NAMES and parts[6]:
+            return True
+    return False
+
+
+def local_browser_cookie_option() -> tuple[str, str | None, None, None] | None:
+    value = env("YTDLP_COOKIES_FROM_BROWSER").strip()
+    if not value:
+        return None
+    browser, _, profile = value.partition(":")
+    browser = browser.strip().lower()
+    if browser not in LOCAL_COOKIE_BROWSERS:
+        raise WorkerError(
+            "cookies_browser_invalid",
+            f"Неизвестный браузер для cookies: {browser or 'пусто'}. Используйте chrome, firefox, edge, brave или safari.",
+        )
+    profile = profile.strip()
+    if len(profile) > 200 or any(ord(char) < 32 for char in profile):
+        raise WorkerError("cookies_browser_invalid", "Некорректный профиль браузера для cookies.")
+    return browser, profile or None, None, None
+
+
+def youtube_auth_hint() -> str:
+    cookies = bool(env("YTDLP_COOKIES").strip())
+    proxy = bool(env("YTDLP_PROXY").strip())
+    if cookies and proxy:
+        return (
+            "YouTube требует вход с IP GitHub Actions. Обновите cookies в YTDLP_COOKIES, "
+            "проверьте прокси YTDLP_PROXY или выберите SoundCloud."
+        )
+    if cookies:
+        return (
+            "YouTube не принял cookies с IP GitHub Actions. Обновите YTDLP_COOKIES, "
+            "добавьте прокси YTDLP_PROXY или выберите SoundCloud."
+        )
+    if proxy:
+        return (
+            "YouTube не принял прокси. Добавьте cookies в YTDLP_COOKIES "
+            "или выберите SoundCloud."
+        )
+    return (
+        "YouTube требует вход с IP GitHub Actions. Добавьте cookies в YTDLP_COOKIES, "
+        "настройте YTDLP_PROXY или выберите SoundCloud."
+    )
+
+
 def yt_dlp_auth_options(url_or_provider: str = "") -> dict[str, Any]:
     options: dict[str, Any] = {}
     is_youtube = url_or_provider == "youtube" or provider_for_url(url_or_provider) == "youtube"
     cookies = env("YTDLP_COOKIES") if is_youtube else ""
+    browser_cookies = local_browser_cookie_option() if is_youtube and not cookies else None
     if cookies:
         key = (str(YTDLP_COOKIE_FILE), hashlib.sha256(cookies.encode("utf-8")).hexdigest())
         if key not in _YTDLP_COOKIE_FILES:
             cookie_path = ""
             try:
-                if cookies.startswith("base64:"):
-                    cookies = base64.b64decode("".join(cookies[7:].split()), validate=True).decode("utf-8")
+                cookie_contents = decode_cookie_secret(cookies)
                 fd, cookie_path = tempfile.mkstemp(
                     prefix=YTDLP_COOKIE_FILE.stem + "-", suffix=".txt", dir=YTDLP_COOKIE_FILE.parent,
                 )
                 with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
-                    handle.write(cookies if cookies.endswith("\n") else cookies + "\n")
+                    handle.write(cookie_contents if cookie_contents.endswith("\n") else cookie_contents + "\n")
                 # CookieJar errors can contain cookie lines; never expose their details.
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
                     http.cookiejar.MozillaCookieJar(cookie_path).load(ignore_discard=True, ignore_expires=True)
+            except WorkerError:
+                if cookie_path:
+                    Path(cookie_path).unlink(missing_ok=True)
+                raise
             except Exception:
                 if cookie_path:
                     Path(cookie_path).unlink(missing_ok=True)
                 raise WorkerError("cookies_invalid", "Секрет YTDLP_COOKIES должен содержать cookies в формате Netscape или base64:.") from None
             _YTDLP_COOKIE_FILES[key] = cookie_path
         options["cookiefile"] = _YTDLP_COOKIE_FILES[key]
+    elif browser_cookies:
+        options["cookiesfrombrowser"] = browser_cookies
     proxy = env("YTDLP_PROXY").strip()
     if proxy:
         options["proxy"] = proxy
@@ -949,11 +1039,7 @@ def classify_source_error(error: Exception) -> WorkerError:
             detail,
         )
     if "sign in to confirm" in low or "not a bot" in low or "cookies" in low and "youtube" in low:
-        return WorkerError(
-            "youtube_auth",
-            "YouTube требует вход с IP GitHub Actions. Добавьте cookies в секрет YTDLP_COOKIES или выберите SoundCloud.",
-            detail,
-        )
+        return WorkerError("youtube_auth", youtube_auth_hint(), detail)
     if "video unavailable" in low or "this video is unavailable" in low or "private video" in low:
         return WorkerError("source_unavailable", "Источник больше недоступен. Выберите другую запись.", detail)
     return WorkerError("download_failed", "Не удалось скачать аудио из источника.", detail)
@@ -981,59 +1067,74 @@ def probe_candidate_availability(page_url: str, provider: str) -> str:
 def download_and_transcode(page_url: str, work_dir: Path) -> tuple[Path, float, dict[str, Any]]:
     validate_source(page_url)
     yt_dlp = yt_dlp_module()
-    options = base_ydl_options(page_url)
-    target_dir = Path(tempfile.mkdtemp(prefix="source-", dir=work_dir))
-    options = {
-        **options,
-        "outtmpl": str(target_dir / "source.%(ext)s"),
-        "overwrites": True,
-        "concurrent_fragment_downloads": 4,
-    }
-    try:
-        with yt_dlp.YoutubeDL(options) as ydl:
-            info = ydl.extract_info(page_url, download=True)
-    except WorkerError:
-        shutil.rmtree(target_dir, ignore_errors=True)
-        raise
-    except Exception as error:
-        shutil.rmtree(target_dir, ignore_errors=True)
-        raise classify_source_error(error) from error
-    if not isinstance(info, dict):
-        shutil.rmtree(target_dir, ignore_errors=True)
-        raise WorkerError("download_failed", "Источник не вернул данные после скачивания.")
-    try:
-        validate_source(page_url, info)
-    except WorkerError:
-        shutil.rmtree(target_dir, ignore_errors=True)
-        raise
-    downloaded: Path | None = None
-    requested = info.get("requested_downloads")
-    if isinstance(requested, list):
-        for item in requested:
-            if isinstance(item, dict):
-                filepath = item.get("filepath")
-                if isinstance(filepath, str) and Path(filepath).exists():
-                    downloaded = Path(filepath)
-                    break
-    if downloaded is None:
-        files = [path for path in target_dir.glob("source.*") if path.is_file()]
-        if files:
-            downloaded = max(files, key=lambda path: path.stat().st_size)
-    if downloaded is None:
-        shutil.rmtree(target_dir, ignore_errors=True)
-        raise WorkerError("download_failed", "yt-dlp не создал аудиофайл.")
-    output = target_dir / "transcoded.m4a"
-    try:
-        duration = transcode_to_m4a(downloaded, output)
-    except WorkerError as error:
-        shutil.rmtree(target_dir, ignore_errors=True)
-        if error.code in ("tool_failed", "tool_timeout"):
-            raise WorkerError("audio_invalid", "Не удалось декодировать или проверить скачанное аудио.", error.detail) from error
-        raise
-    except Exception:
-        shutil.rmtree(target_dir, ignore_errors=True)
-        raise
-    return output, duration, info
+    attempts: list[str | None] = [None]
+    if provider_for_url(page_url) == "youtube":
+        # YouTube sometimes rejects the default client but still serves an embeddable player.
+        attempts.extend(["web_embedded", "mweb"])
+    for index, player_client in enumerate(attempts):
+        target_dir = Path(tempfile.mkdtemp(prefix="source-", dir=work_dir))
+        options = base_ydl_options(page_url)
+        if player_client:
+            options = {
+                **options,
+                "extractor_args": {"youtube": {"player_client": [player_client]}},
+            }
+        options = {
+            **options,
+            "outtmpl": str(target_dir / "source.%(ext)s"),
+            "overwrites": True,
+            "concurrent_fragment_downloads": 4,
+        }
+        try:
+            with yt_dlp.YoutubeDL(options) as ydl:
+                info = ydl.extract_info(page_url, download=True)
+        except WorkerError:
+            shutil.rmtree(target_dir, ignore_errors=True)
+            raise
+        except Exception as error:
+            shutil.rmtree(target_dir, ignore_errors=True)
+            classified = classify_source_error(error)
+            if classified.code == "youtube_auth" and index < len(attempts) - 1:
+                LOG.warning("YouTube auth failed with player_client=%s; retrying", player_client or "default")
+                continue
+            raise classified from error
+        if not isinstance(info, dict):
+            shutil.rmtree(target_dir, ignore_errors=True)
+            raise WorkerError("download_failed", "Источник не вернул данные после скачивания.")
+        try:
+            validate_source(page_url, info)
+        except WorkerError:
+            shutil.rmtree(target_dir, ignore_errors=True)
+            raise
+        downloaded: Path | None = None
+        requested = info.get("requested_downloads")
+        if isinstance(requested, list):
+            for item in requested:
+                if isinstance(item, dict):
+                    filepath = item.get("filepath")
+                    if isinstance(filepath, str) and Path(filepath).exists():
+                        downloaded = Path(filepath)
+                        break
+        if downloaded is None:
+            files = [path for path in target_dir.glob("source.*") if path.is_file()]
+            if files:
+                downloaded = max(files, key=lambda path: path.stat().st_size)
+        if downloaded is None:
+            shutil.rmtree(target_dir, ignore_errors=True)
+            raise WorkerError("download_failed", "yt-dlp не создал аудиофайл.")
+        output = target_dir / "transcoded.m4a"
+        try:
+            duration = transcode_to_m4a(downloaded, output)
+        except WorkerError as error:
+            shutil.rmtree(target_dir, ignore_errors=True)
+            if error.code in ("tool_failed", "tool_timeout"):
+                raise WorkerError("audio_invalid", "Не удалось декодировать или проверить скачанное аудио.", error.detail) from error
+            raise
+        except Exception:
+            shutil.rmtree(target_dir, ignore_errors=True)
+            raise
+        return output, duration, info
+    raise WorkerError("download_failed", "Не удалось скачать аудио из источника.")
 
 
 def make_candidate(
@@ -1278,8 +1379,9 @@ def create_submission(
                 f"**Задание:** `{job.job_id}`",
                 f"**Workflow:** {job.run_url or '—'}",
                 "",
-                f"Владелец: добавьте метку `{APPROVAL_LABELS['approved'][0]}`, чтобы опубликовать запись, "
-                f"или `{APPROVAL_LABELS['rejected'][0]}`, чтобы отклонить заявку.",
+                f"Владелец: нажмите «Принять» в аддоне, чтобы поставить `{APPROVAL_LABELS['local'][0]}` "
+                f"и скачать запись на своём компьютере; `{APPROVAL_LABELS['approved'][0]}` запускает GitHub Actions, "
+                f"`{APPROVAL_LABELS['rejected'][0]}` отклоняет заявку.",
                 "",
                 f"Данные заявки хранятся в `{submission_path(job.job_id)}`. Не редактируйте этот файл вручную.",
             ]
@@ -1452,6 +1554,12 @@ def handle_confirm(github: GitHubAPI, job: JobStatus) -> None:
 def handle_check(github: GitHubAPI, job: JobStatus) -> None:  # pragma: no cover - network path
     cookies = env("YTDLP_COOKIES").strip()
     proxy = env("YTDLP_PROXY").strip()
+    login_cookies = has_youtube_login_cookies(cookies) if cookies else False
+    if cookies and not login_cookies and not proxy:
+        raise WorkerError(
+            "cookies_invalid",
+            "В YTDLP_COOKIES нет данных входа YouTube (SAPISID или LOGIN_INFO). Войдите на youtube.com и экспортируйте cookies заново.",
+        )
     last_error: WorkerError | None = None
     for url in YOUTUBE_CHECK_URLS:
         try:
@@ -1459,7 +1567,14 @@ def handle_check(github: GitHubAPI, job: JobStatus) -> None:  # pragma: no cover
             with yt_dlp.YoutubeDL({**base_ydl_options(url), "skip_download": True}) as ydl:
                 info = ydl.extract_info(url, download=False)
             if isinstance(info, dict) and info.get("id"):
-                mode = "cookies" if cookies else "proxy" if proxy else "без cookies"
+                if cookies and login_cookies and proxy:
+                    mode = "cookies+proxy"
+                elif proxy:
+                    mode = "proxy"
+                elif cookies:
+                    mode = "cookies"
+                else:
+                    mode = "без cookies"
                 job.write("ready", note=f"YouTube доступен ({mode}). Можно скачивать.", candidates=[])
                 return
             last_error = WorkerError("check_failed", "YouTube не вернул данные.")
@@ -1468,10 +1583,14 @@ def handle_check(github: GitHubAPI, job: JobStatus) -> None:  # pragma: no cover
         except Exception as error:
             classified = classify_source_error(error)
             if classified.code == "youtube_auth":
-                if cookies:
-                    classified.message = "YouTube не принял cookies. Экспортируйте cookies заново и обновите секрет YTDLP_COOKIES."
+                if cookies and proxy:
+                    classified.message = "YouTube не принял cookies и прокси. Обновите YTDLP_COOKIES, проверьте YTDLP_PROXY или выберите SoundCloud."
+                elif cookies:
+                    classified.message = "YouTube не принял cookies. Обновите YTDLP_COOKIES, проверьте YTDLP_PROXY или выберите SoundCloud."
+                elif proxy:
+                    classified.message = "YouTube не принял прокси. Добавьте cookies в YTDLP_COOKIES или выберите SoundCloud."
                 else:
-                    classified.message = "YouTube требует вход. Добавьте cookies в секрет YTDLP_COOKIES или настройте YTDLP_PROXY."
+                    classified.message = "YouTube требует вход. Добавьте cookies в YTDLP_COOKIES или настройте YTDLP_PROXY."
                 raise classified from error
             last_error = classified
     if last_error:
@@ -1824,8 +1943,9 @@ def handle_issue_request(github: GitHubAPI, repo: str, branch: str) -> int:
             "", f"**Трек:** `{title}`", f"**Исполнитель:** `{artist}`",
             f"[Трек в Яндекс Музыке](https://music.yandex.ru/track/{track_id})",
             f"[Открыть источник для прослушивания](<{source_link}>)", "",
-            f"Владелец: добавьте метку `{APPROVAL_LABELS['approved'][0]}`, чтобы разрешить публикацию, "
-            f"или `{APPROVAL_LABELS['rejected'][0]}`, чтобы отклонить заявку.",
+            f"Владелец: нажмите «Принять» в аддоне, чтобы поставить `{APPROVAL_LABELS['local'][0]}` "
+            f"и скачать запись на своём компьютере; `{APPROVAL_LABELS['approved'][0]}` запускает GitHub Actions, "
+            f"`{APPROVAL_LABELS['rejected'][0]}` отклоняет заявку.",
         ]))
         return 0
     except Exception:
